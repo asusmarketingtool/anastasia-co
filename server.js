@@ -266,7 +266,7 @@ INSTRUCCIONES:
   ];
 
   const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-haiku-4-5-20251001",
     max_tokens: 500,
     system: systemPrompt,
     messages,
@@ -631,7 +631,7 @@ REGLAS IMPORTANTES:
     }).join("\n");
 
     const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 1200,
       system: `Eres AnastasIA, experta en laptops ASUS para clientes colombianos.
 El cliente puede escribir con errores ortográficos o español informal. Entiende colombianismos pero responde siempre de forma amigable y profesional.
