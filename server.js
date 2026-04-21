@@ -88,6 +88,12 @@ function formatCOP(amount) {
   return `$${Math.round(amount).toLocaleString("es-CO")}`;
 }
 
+// ── UTM tracker ──────────────────────────────────────────────────────
+function addUTM(url, partNumber) {
+  const base = url.includes("?") ? `${url}&` : `${url}?`;
+  return `${base}utm_source=freshchat&utm_medium=chatbot&utm_campaign=anastasia-co&utm_content=${partNumber}`;
+}
+
 async function refreshCatalog() {
   try {
     console.log("🔄 Actualizando catálogo CO...");
@@ -620,7 +626,8 @@ REGLAS IMPORTANTES:
       const promo = calcPromo(p.regularPrice, p.price);
       const promoHint = promo ? `PROMO_CALCULADO: ${promo}` : `PROMO_CALCULADO: none`;
       const safeDesc = p.description.replace(/"/g, "'");
-      return `${i+1}. ${p.title} | Precio oferta: ${p.price} | Precio regular: ${p.regularPrice} | Modelo: ${p.model} | URL: ${p.link} | Imagen: ${p.image} | Descripcion: ${safeDesc} | ${promoHint}`;
+      const sku = p.partNumber || p.model;
+      return `${i+1}. ${p.title} | Precio oferta: ${p.price} | Precio regular: ${p.regularPrice} | Modelo: ${p.model} | URL: ${addUTM(p.link, sku)} | Imagen: ${p.image} | Descripcion: ${safeDesc} | ${promoHint}`;
     }).join("\n");
 
     const response = await anthropic.messages.create({
@@ -670,6 +677,7 @@ INSTRUCCIONES ESTRICTAS:
     console.error("❌ Error en AnastasIA CO:", err.message);
     const fallback = searchProducts(query).slice(0, 3).map(p => {
       const promo = calcPromo(p.regularPrice, p.price);
+      const sku = p.partNumber || p.model;
       return {
         TITLE: p.title,
         TITLE_DISPLAY: p.title.slice(0, 50),
@@ -677,7 +685,7 @@ INSTRUCCIONES ESTRICTAS:
         PRECIO_OFERTA_FORMAT: formatCOP(parseFloat(p.price) || 0),
         PRECIO_REGULAR: parseFloat(p.regularPrice || p.price) || 0,
         PRECIO_OFERTA: parseFloat(p.price) || 0,
-        URL: p.link,
+        URL: addUTM(p.link, sku),
         IMAGEN: p.image,
         SPECS: p.description ? p.description.replace(/"/g, "'").slice(0, 90) : "",
         PROMO: promo || "Visita nuestra tienda ASUS Colombia",
