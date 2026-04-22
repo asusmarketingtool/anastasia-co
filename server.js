@@ -437,7 +437,7 @@ app.get("/anastasia", async (req, res) => {
       "gabinete","case pc","ventilador","cooler",
       "celular","telefono","teléfono","smartphone","iphone","samsung","xiaomi",
       "garantia","garantía","warranty","reclamo","queja","devolucion","devolución",
-      "mouse","teclado","keyboard","audifonos","audífonos","headset","webcam",
+      "mouse","keyboard","audifonos","audífonos","headset","webcam",
       "impresora","router","modem","módem",
       "memoria usb","pendrive","disco externo","parlante","bocina","altavoz",
       "no prende","no enciende","no funciona","se apaga","pantalla negra","pantalla azul",
