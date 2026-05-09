@@ -8,7 +8,7 @@ app.use(express.json());
 
 const CONFIG = {
   FEED_URL: "https://feeds.datafeedwatch.com/73484/2796c588a919a06bb42a884950221484637dff3a.xml",
-  FEED_REFRESH_MS: 30 * 60 * 1000,
+  FEED_REFRESH_MS: 60 * 60 * 1000,
   FRESHCHAT_TOKEN: process.env.FRESHCHAT_TOKEN,
   FRESHCHAT_DOMAIN: process.env.FRESHCHAT_DOMAIN,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
@@ -340,6 +340,26 @@ app.get("/anastasia", async (req, res) => {
   console.log(`🤖 AnastasIA CO consulta: "${query}"`);
   if (!query) return res.json({ items: [] });
 
+  // ── Guardrail 0: URL detector ────────────────────────────────────
+  if (query.startsWith("http://") || query.startsWith("https://")) {
+    console.log(`⚠️ URL detectada de IP ${ip}`);
+    return res.json({
+      message: "Solo puedo ayudarte con recomendaciones de laptops ASUS. ¿Qué tipo de laptop estás buscando?",
+      items: [{
+        TITLE: "Explora nuestras laptops ASUS",
+        TITLE_DISPLAY: "Ver laptops disponibles",
+        PRECIO_REGULAR_FORMAT: "",
+        PRECIO_OFERTA_FORMAT: "",
+        PRECIO_REGULAR: 0,
+        PRECIO_OFERTA: 0,
+        URL: "https://www.asus.com/co/store/",
+        IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800",
+        SPECS: "Gaming · Trabajo · Universidad · Diseño",
+        PROMO: "🚀 Encuentra tu laptop ideal hoy"
+      }]
+    });
+  }
+
   // ── Guardrail 1: Query length ────────────────────────────────────
   if (query.length > CONFIG.MAX_QUERY_LENGTH) {
     console.log(`⚠️ Query demasiado larga (${query.length} chars) de IP ${ip}`);
@@ -423,6 +443,34 @@ app.get("/anastasia", async (req, res) => {
   try {
     const q = query.toLowerCase();
 
+    // ── Sales redirect — BEFORE service ─────────────────────────────
+    const salesWords = [
+      "cupon","cupón","codigo descuento","código descuento","promocion","promoción",
+      "pedido","mi orden","mi compra","pago","factura","boleta",
+      "trade in","trade-in","cambiar equipo","entregar equipo","canjear",
+      "reposicion","reposición","restock","cuando llega","cuando estará","cuándo estará","cuando va a llegar",
+      "tiendas","donde comprar","distribuidor","punto de venta",
+      "devolucion","devolución","cambio de producto","reclamo","queja",
+    ];
+    if (salesWords.some(w => q.includes(w))) {
+      console.log(`💼 Consulta de ventas de IP ${ip}: "${query}"`);
+      return res.json({
+        message: "Para consultas sobre cupones, pedidos o promociones, nuestros asesores de ventas pueden ayudarte. Reinicia el chat y selecciona 'Hablar con un asesor', o escríbenos a soporteventas.co@asus.com 📧",
+        items: [{
+          TITLE: "Asesores de Ventas ASUS Colombia",
+          TITLE_DISPLAY: "Contactar asesor de ventas",
+          PRECIO_REGULAR_FORMAT: "",
+          PRECIO_OFERTA_FORMAT: "",
+          PRECIO_REGULAR: 0,
+          PRECIO_OFERTA: 0,
+          URL: "https://www.asus.com/co/store/",
+          IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800",
+          SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00",
+          PROMO: "📧 soporteventas.co@asus.com"
+        }]
+      });
+    }
+
     // ── Customer service redirect — BEFORE search ────────────────────
     const serviceWords = [
       "cargador","cargadora","charger","cable carga","adaptador","fuente de poder",
@@ -436,7 +484,7 @@ app.get("/anastasia", async (req, res) => {
       "ram suelta","memoria ram suelta","disco duro","hdd",
       "gabinete","case pc","ventilador","cooler",
       "celular","telefono","teléfono","smartphone","iphone","samsung","xiaomi",
-      "garantia","garantía","warranty","reclamo","queja","devolucion","devolución",
+      "garantia","garantía","warranty",
       "mouse","keyboard","audifonos","audífonos","headset","webcam",
       "impresora","router","modem","módem",
       "memoria usb","pendrive","disco externo","parlante","bocina","altavoz",
@@ -591,11 +639,11 @@ app.get("/anastasia", async (req, res) => {
     } else {
       const exactMatches = exactMatchProducts(query, relevant);
       if (exactMatches.length > 0) {
-        productsToSend = exactMatches;
-        exactCount = exactMatches.length;
+        productsToSend = exactMatches.slice(0, 3);
+        exactCount = productsToSend.length;
         messageType = "exact";
       } else {
-        productsToSend = relevant;
+        productsToSend = relevant.slice(0, 3);
         exactCount = 0;
         messageType = "noMatch";
       }
@@ -614,11 +662,11 @@ app.get("/anastasia", async (req, res) => {
     } else if (messageType === "exact") {
       userMessage = `El cliente busca: "${query}". Hay ${exactCount} productos que coinciden exactamente. Muestra SOLO esos ${exactCount}. NO agregues más aunque sean menos de 3. Para el campo MESSAGE escribe una frase corta y natural en español colombiano celebrando que encontramos lo que buscaba.`;
     } else {
-      userMessage = `El cliente busca: "${query}". No hay productos exactos en el catálogo. Devuelve UN solo item con el mejor producto alternativo disponible.
+      userMessage = `El cliente busca: "${query}". No hay productos exactos en el catálogo pero tenemos ${productsToSend.length} alternativas similares. Muéstralas TODAS.
 
 REGLAS IMPORTANTES:
 - El campo TITLE debe ser el nombre real del producto alternativo, NUNCA el texto del cliente
-- El campo MESSAGE debe ser una frase natural y amigable en español colombiano explicando por qué recomiendas esa alternativa. NUNCA copies literalmente lo que escribió el cliente`;
+- El campo MESSAGE debe ser una frase natural y amigable en español colombiano explicando que ese modelo/spec no está disponible pero que tienes estas alternativas similares. NUNCA copies literalmente lo que escribió el cliente`;
     }
 
     // ── Build product list with promo hint ───────────────────────────
