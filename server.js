@@ -17,7 +17,7 @@ const CONFIG = {
   CONVERSATION_HISTORY: 6,
   RATE_LIMIT_MAX: 10,
   RATE_LIMIT_WINDOW_MS: 60 * 60 * 1000,
-  MAX_QUERY_LENGTH: 150,
+  MAX_QUERY_LENGTH: 300,
 };
 
 let catalog = [];
@@ -451,6 +451,8 @@ app.get("/anastasia", async (req, res) => {
       "reposicion","reposición","restock","cuando llega","cuando estará","cuándo estará","cuando va a llegar",
       "tiendas","donde comprar","distribuidor","punto de venta",
       "devolucion","devolución","cambio de producto","reclamo","queja",
+      // Solicitudes de asesor humano
+      "asesor","asesores","agente humano","hablar con humano","hablar con persona","hablar con alguien","persona real",
     ];
     if (salesWords.some(w => q.includes(w))) {
       console.log(`💼 Consulta de ventas de IP ${ip}: "${query}"`);
@@ -472,22 +474,23 @@ app.get("/anastasia", async (req, res) => {
     }
 
     // ── Customer service redirect — BEFORE search ────────────────────
+    // Nota: "bateria"/"batería"/"battery"/"pila" se manejan abajo con detección contextual
+    // para no bloquear consultas legítimas de compra ("laptop con buena duración de batería").
     const serviceWords = [
       "cargador","cargadora","charger","cable carga","adaptador","fuente de poder",
-      "bateria","batería","battery","pila","bateria hinchada","bateria de repuesto","cambio de bateria",
+      "bateria hinchada","bateria de repuesto","cambio de bateria",
       "pantalla rota","reemplazo de pantalla","cambio de pantalla","pantalla de repuesto",
       "reparacion","reparación","repair","repuesto","repuestos","spare part","pieza","componente",
       "arreglar","arreglo","tecnico","técnico","servicio tecnico","servicio técnico",
-      "motherboard","placa madre","tarjeta madre",
+      "motherboard","motherboards","placa madre","placas madre","tarjeta madre","tarjetas madre",
       "tarjeta grafica","tarjeta gráfica","graphics card","gpu externa",
       "psu","fuente de alimentacion","fuente de alimentación",
       "ram suelta","memoria ram suelta","disco duro","hdd",
       "gabinete","case pc","ventilador","cooler",
       "celular","telefono","teléfono","smartphone","iphone","samsung","xiaomi",
       "garantia","garantía","warranty",
-      "mouse","keyboard","audifonos","audífonos","headset","webcam",
       "impresora","router","modem","módem",
-      "memoria usb","pendrive","disco externo","parlante","bocina","altavoz",
+      "memoria usb","pendrive","disco externo",
       "no prende","no enciende","no funciona","se apaga","pantalla negra","pantalla azul",
       "teclado roto","bisagra","puerto usb","puerto hdmi roto",
       "lento","lenta","virus","formatear","formateo","drivers","controladores",
@@ -495,9 +498,16 @@ app.get("/anastasia", async (req, res) => {
       "instalar windows","activar windows","actualizacion","actualizar",
       "wifi","wi-fi","access point","punto de acceso","switch de red","hub de red",
       "ups","no break","estabilizador",
-      "proyector","smartwatch","reloj inteligente","auriculares","auricular"
+      "proyector","smartwatch","reloj inteligente"
     ];
-    const isServiceRequest = serviceWords.some(w => q.includes(w));
+
+    // Detección contextual de batería: solo redirige a servicio técnico si hay
+    // contexto de problema/repuesto Y NO hay contexto de feature/compra.
+    const mentionsBattery = /\b(bateria|batería|battery|pila)\b/.test(q);
+    const batteryProblem = mentionsBattery && /(hinchada|no carga|no funciona|repuesto|reemplaz|rota|muerta|dañ|estallad|inflada)/.test(q);
+    const batteryFeature = mentionsBattery && /(duracion|duración|autonomia|autonomía|horas|dura|larga|buena|precio|hasta|pesos|millones|busco|quiero|recomienda|presupuesto)/.test(q);
+
+    const isServiceRequest = serviceWords.some(w => q.includes(w)) || (batteryProblem && !batteryFeature);
 
     if (isServiceRequest) {
       return res.json({
@@ -551,7 +561,12 @@ app.get("/anastasia", async (req, res) => {
       "componentes","armar pc","build pc","pc armada","procesador suelto",
       "television","televisor","smart tv",
       "smartwatch","reloj inteligente",
-      "proyector","ups","estabilizador"
+      "proyector","ups","estabilizador",
+      // Accesorios de transporte
+      "bolso","mochila","maletin","maletín","funda","estuche","backpack","forro",
+      // Periféricos / accesorios
+      "mouse","keyboard","teclado externo","audifonos","audífonos","headset","webcam","auriculares","auricular",
+      "parlante","bocina","altavoz"
     ];
     const isNonLaptop = nonLaptopWords.some(w => q.includes(w)) ||
       (q.includes("monitor") && !q.includes("laptop") && !q.includes("pantalla de laptop"));
@@ -680,7 +695,7 @@ REGLAS IMPORTANTES:
 
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 1200,
+      max_tokens: 2500,
       system: `Eres AnastasIA, experta en laptops ASUS para clientes colombianos.
 El cliente puede escribir con errores ortográficos o español informal. Entiende colombianismos pero responde siempre de forma amigable y profesional.
 TONO: Amigable y profesional con calidez colombiana. Puedes usar expresiones como "berraca" o "está muy buena" ocasionalmente, pero evita jerga muy informal. Escribe como un vendedor experto de ASUS Colombia que es simpático y cercano.
@@ -716,8 +731,26 @@ INSTRUCCIONES ESTRICTAS:
       messages: [{ role: "user", content: userMessage }],
     });
 
+    // ── Parse JSON con repair fallback ────────────────────────────────
     const raw = response.content[0].text.trim().replace(/```json|```/g, "").trim();
-    const result = JSON.parse(raw);
+    let result;
+    try {
+      result = JSON.parse(raw);
+    } catch (parseErr) {
+      // Si el JSON viene truncado, intentar rescatar items completos
+      const lastValidItem = raw.lastIndexOf("},");
+      if (lastValidItem > 0) {
+        const repaired = raw.slice(0, lastValidItem + 1) + "]}";
+        try {
+          result = JSON.parse(repaired);
+          console.log(`⚠️ JSON reparado: ${result.items?.length || 0} productos rescatados`);
+        } catch {
+          throw parseErr;
+        }
+      } else {
+        throw parseErr;
+      }
+    }
     console.log(`✅ AnastasIA CO devuelve ${result.items?.length || 0} productos`);
     return res.json(result);
 
