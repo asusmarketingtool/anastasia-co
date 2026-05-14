@@ -6,6 +6,15 @@ import Anthropic from "@anthropic-ai/sdk";
 const app = express();
 app.use(express.json());
 
+// ── CORS ─────────────────────────────────────────────────────────────
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 const CONFIG = {
   FEED_URL: "https://feeds.datafeedwatch.com/73484/2796c588a919a06bb42a884950221484637dff3a.xml",
   FEED_REFRESH_MS: 60 * 60 * 1000,
@@ -451,7 +460,6 @@ app.get("/anastasia", async (req, res) => {
       "reposicion","reposición","restock","cuando llega","cuando estará","cuándo estará","cuando va a llegar",
       "tiendas","donde comprar","distribuidor","punto de venta",
       "devolucion","devolución","cambio de producto","reclamo","queja",
-      // Solicitudes de asesor humano
       "asesor","asesores","agente humano","hablar con humano","hablar con persona","hablar con alguien","persona real",
     ];
     if (salesWords.some(w => q.includes(w))) {
@@ -474,8 +482,6 @@ app.get("/anastasia", async (req, res) => {
     }
 
     // ── Customer service redirect — BEFORE search ────────────────────
-    // Nota: "bateria"/"batería"/"battery"/"pila" se manejan abajo con detección contextual
-    // para no bloquear consultas legítimas de compra ("laptop con buena duración de batería").
     const serviceWords = [
       "cargador","cargadora","charger","cable carga","adaptador","fuente de poder",
       "bateria hinchada","bateria de repuesto","cambio de bateria",
@@ -501,8 +507,6 @@ app.get("/anastasia", async (req, res) => {
       "proyector","smartwatch","reloj inteligente"
     ];
 
-    // Detección contextual de batería: solo redirige a servicio técnico si hay
-    // contexto de problema/repuesto Y NO hay contexto de feature/compra.
     const mentionsBattery = /\b(bateria|batería|battery|pila)\b/.test(q);
     const batteryProblem = mentionsBattery && /(hinchada|no carga|no funciona|repuesto|reemplaz|rota|muerta|dañ|estallad|inflada)/.test(q);
     const batteryFeature = mentionsBattery && /(duracion|duración|autonomia|autonomía|horas|dura|larga|buena|precio|hasta|pesos|millones|busco|quiero|recomienda|presupuesto)/.test(q);
@@ -562,9 +566,7 @@ app.get("/anastasia", async (req, res) => {
       "television","televisor","smart tv",
       "smartwatch","reloj inteligente",
       "proyector","ups","estabilizador",
-      // Accesorios de transporte
       "bolso","mochila","maletin","maletín","funda","estuche","backpack","forro",
-      // Periféricos / accesorios
       "mouse","keyboard","teclado externo","audifonos","audífonos","headset","webcam","auriculares","auricular",
       "parlante","bocina","altavoz"
     ];
@@ -737,7 +739,6 @@ INSTRUCCIONES ESTRICTAS:
     try {
       result = JSON.parse(raw);
     } catch (parseErr) {
-      // Si el JSON viene truncado, intentar rescatar items completos
       const lastValidItem = raw.lastIndexOf("},");
       if (lastValidItem > 0) {
         const repaired = raw.slice(0, lastValidItem + 1) + "]}";
