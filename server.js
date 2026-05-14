@@ -33,46 +33,29 @@ let catalog = [];
 const conversations = {};
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// ── Rate limiter store ───────────────────────────────────────────────
 const rateLimitStore = {};
-
 function isRateLimited(ip) {
   const now = Date.now();
-  if (!rateLimitStore[ip]) {
-    rateLimitStore[ip] = { count: 1, firstRequest: now };
-    return false;
-  }
+  if (!rateLimitStore[ip]) { rateLimitStore[ip] = { count: 1, firstRequest: now }; return false; }
   const record = rateLimitStore[ip];
-  if (now - record.firstRequest > CONFIG.RATE_LIMIT_WINDOW_MS) {
-    rateLimitStore[ip] = { count: 1, firstRequest: now };
-    return false;
-  }
+  if (now - record.firstRequest > CONFIG.RATE_LIMIT_WINDOW_MS) { rateLimitStore[ip] = { count: 1, firstRequest: now }; return false; }
   if (record.count >= CONFIG.RATE_LIMIT_MAX) return true;
   record.count++;
   return false;
 }
 
-// ── Spam detector ────────────────────────────────────────────────────
 const spamStore = {};
-
 function isSpam(ip, query) {
   const key = `${ip}:${query.trim().toLowerCase()}`;
   const now = Date.now();
-  if (!spamStore[key]) {
-    spamStore[key] = { count: 1, firstSeen: now };
-    return false;
-  }
+  if (!spamStore[key]) { spamStore[key] = { count: 1, firstSeen: now }; return false; }
   const record = spamStore[key];
-  if (now - record.firstSeen > 5 * 60 * 1000) {
-    spamStore[key] = { count: 1, firstSeen: now };
-    return false;
-  }
+  if (now - record.firstSeen > 5 * 60 * 1000) { spamStore[key] = { count: 1, firstSeen: now }; return false; }
   if (record.count >= 3) return true;
   record.count++;
   return false;
 }
 
-// ── Off-topic detector ───────────────────────────────────────────────
 const offTopicWords = [
   "política","gobierno","presidente","elecciones","partido","congreso",
   "religion","religión","dios","iglesia",
@@ -86,18 +69,15 @@ const offTopicWords = [
   "chiste","broma","cuento",
   "noticias","periodico","periódico","novedades del mundo",
 ];
-
 function isOffTopic(query) {
   const q = query.toLowerCase();
   return offTopicWords.some(w => q.includes(w));
 }
 
-// ── COP price formatter ──────────────────────────────────────────────
 function formatCOP(amount) {
   return `$${Math.round(amount).toLocaleString("es-CO")}`;
 }
 
-// ── UTM tracker ──────────────────────────────────────────────────────
 function addUTM(url, partNumber) {
   const base = url.includes("?") ? `${url}&` : `${url}?`;
   return `${base}utm_source=freshchat&utm_medium=chatbot&utm_campaign=anastasia-co&utm_content=${partNumber}`;
@@ -108,37 +88,25 @@ async function refreshCatalog() {
     console.log("🔄 Actualizando catálogo CO...");
     const res = await fetch(CONFIG.FEED_URL);
     const xml = await res.text();
-    const parser = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: "@_",
-      parseTagValue: true,
-    });
+    const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_", parseTagValue: true });
     const parsed = parser.parse(xml);
     const raw = parsed?.products?.product || parsed?.rss?.channel?.item || parsed?.feed?.entry || [];
     const items = Array.isArray(raw) ? raw : [raw];
-
     catalog = items.map((item) => {
-      const val = (v) => {
-        if (!v) return "";
-        if (typeof v === "string") return v.trim();
-        if (typeof v === "number") return String(v);
-        if (v["#text"]) return String(v["#text"]).trim();
-        return "";
-      };
+      const val = (v) => { if (!v) return ""; if (typeof v === "string") return v.trim(); if (typeof v === "number") return String(v); if (v["#text"]) return String(v["#text"]).trim(); return ""; };
       const stripHtml = (s) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").replace(/&nbsp;/g, " ").replace(/&[a-z]+;/g, "").trim().slice(0, 300);
-
       return {
-        id:           val(item.Part_Number) || val(item.Model) || "",
-        title:        val(item.Name)        || val(item.title) || "",
-        description:  stripHtml(val(item.Short_Description) || val(item.description) || ""),
-        price:        val(item.Offer_Price) || val(item.Regular_Price) || val(item.price) || "",
+        id: val(item.Part_Number) || val(item.Model) || "",
+        title: val(item.Name) || val(item.title) || "",
+        description: stripHtml(val(item.Short_Description) || val(item.description) || ""),
+        price: val(item.Offer_Price) || val(item.Regular_Price) || val(item.price) || "",
         regularPrice: val(item.Regular_Price) || "",
-        link:         val(item.Product_URL) || val(item.link)  || "",
-        image:        val(item.Main_Image_URL) || val(item.image) || "",
-        brand:        "ASUS",
-        model:        val(item.Model)       || "",
-        partNumber:   val(item.Part_Number) || "",
-        category:     val(item.BU)          || val(item.category) || "",
+        link: val(item.Product_URL) || val(item.link) || "",
+        image: val(item.Main_Image_URL) || val(item.image) || "",
+        brand: "ASUS",
+        model: val(item.Model) || "",
+        partNumber: val(item.Part_Number) || "",
+        category: val(item.BU) || val(item.category) || "",
         availability: val(item.Availability) || val(item.availability) || "in stock",
       };
     }).filter(p => {
@@ -148,7 +116,6 @@ async function refreshCatalog() {
       if (regular > 0 && offer > 0 && (offer / regular) < 0.5) return false;
       return true;
     });
-
     console.log(`✅ Catálogo CO cargado: ${catalog.length} productos activos`);
   } catch (err) {
     console.error("❌ Error actualizando catálogo CO:", err.message);
@@ -178,66 +145,44 @@ const SINONIMOS = {
 function searchProducts(query) {
   const q = query.toLowerCase();
   const words = q.split(/\s+/).filter(w => w.length > 1);
-
   const expanded = new Set(words);
   for (const [_cat, syns] of Object.entries(SINONIMOS)) {
-    if (syns.some(s => q.includes(s)) || words.some(w => syns.includes(w))) {
-      syns.forEach(s => expanded.add(s));
-    }
+    if (syns.some(s => q.includes(s)) || words.some(w => syns.includes(w))) syns.forEach(s => expanded.add(s));
   }
   const allWords = [...expanded];
-
   if (allWords.length === 0) return catalog.slice(0, CONFIG.MAX_PRODUCTS_IN_PROMPT);
-
   const scored = catalog.map(product => {
     const text = `${product.title} ${product.description} ${product.category} ${product.brand} ${product.model} ${product.link}`.toLowerCase();
     let score = allWords.reduce((acc, w) => acc + (text.includes(w) ? 1 : 0), 0);
     words.forEach(w => { if (text.includes(w)) score += 5; });
     return { product, score };
   });
-
-  const results = scored
-    .filter(s => s.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, CONFIG.MAX_PRODUCTS_IN_PROMPT)
-    .map(s => s.product);
-
+  const results = scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score).slice(0, CONFIG.MAX_PRODUCTS_IN_PROMPT).map(s => s.product);
   const budgetWords = ["barata","barato","económico","economico","precio","accesible","presupuesto","pesos","bajos","low","cheap","plata","billete"];
-  const isBudgetQuery = budgetWords.some(w => q.includes(w));
-
-  if (isBudgetQuery && results.length > 0) {
+  if (budgetWords.some(w => q.includes(w)) && results.length > 0) {
     return results.sort((a, b) => (parseFloat(a.price) || 999999) - (parseFloat(b.price) || 999999));
   }
-
   return results.length > 0 ? results : catalog.slice(0, CONFIG.MAX_PRODUCTS_IN_PROMPT);
 }
 
 function exactMatchProducts(query, results) {
   const q = query.toLowerCase();
   const stopWords = ["busco","quiero","necesito","tengo","tiene","tienes","para","con","una","uno","un","el","la","los","las","del","que","algo","este","esta","ese","esa","hay","dame","dime","ver","cual","cuál","me","mi","su","tu","yo","por","muy","mas","más","pues","ome","marica","parcero","parce"];
-  const words = q.split(/\s+/)
-    .filter(w => w.length > 1)
-    .filter(w => !stopWords.includes(w));
-
+  const words = q.split(/\s+/).filter(w => w.length > 1).filter(w => !stopWords.includes(w));
   if (words.length === 0) return [];
-
   return results.filter(product => {
     const text = `${product.title} ${product.description} ${product.model} ${product.link}`.toLowerCase();
     const matches = words.every(w => text.includes(w));
     if (!matches) return false;
     const processorSearch = query.match(/\bi[3579]\b/i);
-    if (processorSearch) {
-      return text.includes(processorSearch[0].toLowerCase());
-    }
+    if (processorSearch) return text.includes(processorSearch[0].toLowerCase());
     return true;
   });
 }
 
 function formatProductsForPrompt(products) {
   if (products.length === 0) return "No encontré productos que coincidan exactamente.";
-  return products.map(p =>
-    `• ${p.title}${p.brand ? ` (${p.brand})` : ""} — ${p.price}${p.category ? ` | Categoría: ${p.category}` : ""}${p.link ? ` | URL: ${p.link}` : ""}`
-  ).join("\n");
+  return products.map(p => `• ${p.title}${p.brand ? ` (${p.brand})` : ""} — ${p.price}${p.category ? ` | Categoría: ${p.category}` : ""}${p.link ? ` | URL: ${p.link}` : ""}`).join("\n");
 }
 
 function calcPromo(regularPrice, price) {
@@ -251,16 +196,12 @@ function calcPromo(regularPrice, price) {
 async function askClaude(conversationId, userMessage) {
   const relevant = searchProducts(userMessage);
   const productList = formatProductsForPrompt(relevant);
-
   if (!conversations[conversationId]) conversations[conversationId] = [];
   const history = conversations[conversationId];
-
   const systemPrompt = `Eres un asistente de ventas amigable y experto de esta tienda online.
 Tu objetivo es ayudar al cliente a encontrar el producto perfecto según sus necesidades.
-
 PRODUCTOS DISPONIBLES AHORA MISMO (en stock):
 ${productList}
-
 INSTRUCCIONES:
 - Si no tienes suficiente información del cliente, haz UNA pregunta específica para entender mejor qué necesita.
 - Cuando recomiendas, explica brevemente POR QUÉ ese producto encaja con lo que pidió.
@@ -268,48 +209,23 @@ INSTRUCCIONES:
 - Si el producto no está en la lista de disponibles, no lo menciones.
 - Responde siempre en el mismo idioma en que te escribe el cliente.
 - Sé conciso: respuestas cortas, conversacionales.`;
-
-  const messages = [
-    ...history.slice(-CONFIG.CONVERSATION_HISTORY),
-    { role: "user", content: userMessage },
-  ];
-
-  const response = await anthropic.messages.create({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 500,
-    system: systemPrompt,
-    messages,
-  });
-
+  const messages = [...history.slice(-CONFIG.CONVERSATION_HISTORY), { role: "user", content: userMessage }];
+  const response = await anthropic.messages.create({ model: "claude-haiku-4-5-20251001", max_tokens: 500, system: systemPrompt, messages });
   const reply = response.content[0].text;
   history.push({ role: "user", content: userMessage });
   history.push({ role: "assistant", content: reply });
-  if (history.length > CONFIG.CONVERSATION_HISTORY * 2) {
-    conversations[conversationId] = history.slice(-CONFIG.CONVERSATION_HISTORY * 2);
-  }
+  if (history.length > CONFIG.CONVERSATION_HISTORY * 2) conversations[conversationId] = history.slice(-CONFIG.CONVERSATION_HISTORY * 2);
   return reply;
 }
 
 async function replyOnFreshchat(conversationId, actorId, text) {
   const url = `https://api.freshchat.com/v2/conversations/${conversationId}/messages`;
-  const body = {
-    message_type: "normal",
-    actor_type: "agent",
-    actor_id: actorId,
-    message_parts: [{ text: { content: text } }],
-  };
   const res = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${CONFIG.FRESHCHAT_TOKEN}`,
-    },
-    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${CONFIG.FRESHCHAT_TOKEN}` },
+    body: JSON.stringify({ message_type: "normal", actor_type: "agent", actor_id: actorId, message_parts: [{ text: { content: text } }] }),
   });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Freshchat API error ${res.status}: ${err}`);
-  }
+  if (!res.ok) throw new Error(`Freshchat API error ${res.status}: ${await res.text()}`);
 }
 
 app.post("/webhook/freshchat", async (req, res) => {
@@ -321,9 +237,7 @@ app.post("/webhook/freshchat", async (req, res) => {
     const conversationId = event.conversation?.id;
     const agentId = event.conversation?.assigned_agent_id;
     if (!conversationId) return;
-    const userMessage = event.messages
-      .map(m => m.message_parts?.map(p => p.text?.content).filter(Boolean).join(" "))
-      .filter(Boolean).join(" ").trim();
+    const userMessage = event.messages.map(m => m.message_parts?.map(p => p.text?.content).filter(Boolean).join(" ")).filter(Boolean).join(" ").trim();
     if (!userMessage) return;
     console.log(`💬 [${conversationId}] Usuario: ${userMessage}`);
     const reply = await askClaude(conversationId, userMessage);
@@ -339,8 +253,7 @@ app.get("/health", (req, res) => {
 });
 
 app.get("/catalog/search", (req, res) => {
-  const q = req.query.q || "";
-  res.json(searchProducts(q));
+  res.json(searchProducts(req.query.q || ""));
 });
 
 app.get("/anastasia", async (req, res) => {
@@ -349,110 +262,44 @@ app.get("/anastasia", async (req, res) => {
   console.log(`🤖 AnastasIA CO consulta: "${query}"`);
   if (!query) return res.json({ items: [] });
 
-  // ── Guardrail 0: URL detector ────────────────────────────────────
   if (query.startsWith("http://") || query.startsWith("https://")) {
-    console.log(`⚠️ URL detectada de IP ${ip}`);
     return res.json({
       message: "Solo puedo ayudarte con recomendaciones de laptops ASUS. ¿Qué tipo de laptop estás buscando?",
-      items: [{
-        TITLE: "Explora nuestras laptops ASUS",
-        TITLE_DISPLAY: "Ver laptops disponibles",
-        PRECIO_REGULAR_FORMAT: "",
-        PRECIO_OFERTA_FORMAT: "",
-        PRECIO_REGULAR: 0,
-        PRECIO_OFERTA: 0,
-        URL: "https://www.asus.com/co/store/",
-        IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800",
-        SPECS: "Gaming · Trabajo · Universidad · Diseño",
-        PROMO: "🚀 Encuentra tu laptop ideal hoy"
-      }]
+      items: [{ TITLE: "Explora nuestras laptops ASUS", TITLE_DISPLAY: "Ver laptops disponibles", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Gaming · Trabajo · Universidad · Diseño", PROMO: "Encuentra tu laptop ideal hoy" }]
     });
   }
 
-  // ── Guardrail 1: Query length ────────────────────────────────────
   if (query.length > CONFIG.MAX_QUERY_LENGTH) {
-    console.log(`⚠️ Query demasiado larga (${query.length} chars) de IP ${ip}`);
     return res.json({
-      message: "Tu mensaje es muy largo. Por favor escribe una consulta más corta, como por ejemplo: 'laptop para gaming' o 'laptop económica para estudiantes'.",
-      items: [{
-        TITLE: "Explora nuestras laptops ASUS",
-        TITLE_DISPLAY: "Ver laptops disponibles",
-        PRECIO_REGULAR_FORMAT: "",
-        PRECIO_OFERTA_FORMAT: "",
-        PRECIO_REGULAR: 0,
-        PRECIO_OFERTA: 0,
-        URL: "https://www.asus.com/co/store/",
-        IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800",
-        SPECS: "Gaming · Trabajo · Universidad · Diseño",
-        PROMO: "🚀 Encuentra tu laptop ideal hoy"
-      }]
+      message: "Tu mensaje es muy largo. Por favor escribe una consulta más corta.",
+      items: [{ TITLE: "Explora nuestras laptops ASUS", TITLE_DISPLAY: "Ver laptops disponibles", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Gaming · Trabajo · Universidad · Diseño", PROMO: "Encuentra tu laptop ideal hoy" }]
     });
   }
 
-  // ── Guardrail 2: Rate limiting ───────────────────────────────────
   if (isRateLimited(ip)) {
-    console.log(`⚠️ Rate limit alcanzado para IP ${ip}`);
     return res.json({
-      message: "Has realizado demasiadas consultas en poco tiempo. Por favor espera unos minutos e intenta de nuevo. 😊",
-      items: [{
-        TITLE: "Servicio al Cliente ASUS Colombia",
-        TITLE_DISPLAY: "Contáctanos directamente",
-        PRECIO_REGULAR_FORMAT: "",
-        PRECIO_OFERTA_FORMAT: "",
-        PRECIO_REGULAR: 0,
-        PRECIO_OFERTA: 0,
-        URL: "https://www.asus.com/co/support/",
-        IMAGEN: "https://www.asus.com/media/global/gallery/lVTlQHxDPCyHhWVU_setting_fff_1_90_end_1000.png",
-        SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00",
-        PROMO: "📞 (601) 241 55 28"
-      }]
+      message: "Has realizado demasiadas consultas en poco tiempo. Por favor espera unos minutos e intenta de nuevo.",
+      items: [{ TITLE: "Servicio al Cliente ASUS Colombia", TITLE_DISPLAY: "Contáctanos directamente", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/support/", IMAGEN: "https://www.asus.com/media/global/gallery/lVTlQHxDPCyHhWVU_setting_fff_1_90_end_1000.png", SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00", PROMO: "(601) 241 55 28" }]
     });
   }
 
-  // ── Guardrail 3: Spam detection ──────────────────────────────────
   if (isSpam(ip, query)) {
-    console.log(`⚠️ Spam detectado de IP ${ip}: "${query}"`);
     return res.json({
-      message: "Parece que estás repitiendo la misma búsqueda. ¿Puedo ayudarte con algo más específico? 😊",
-      items: [{
-        TITLE: "Explora nuestras laptops ASUS",
-        TITLE_DISPLAY: "Ver laptops disponibles",
-        PRECIO_REGULAR_FORMAT: "",
-        PRECIO_OFERTA_FORMAT: "",
-        PRECIO_REGULAR: 0,
-        PRECIO_OFERTA: 0,
-        URL: "https://www.asus.com/co/store/",
-        IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800",
-        SPECS: "Gaming · Trabajo · Universidad · Diseño",
-        PROMO: "🚀 Encuentra tu laptop ideal hoy"
-      }]
+      message: "Parece que estás repitiendo la misma búsqueda. ¿Puedo ayudarte con algo más específico?",
+      items: [{ TITLE: "Explora nuestras laptops ASUS", TITLE_DISPLAY: "Ver laptops disponibles", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Gaming · Trabajo · Universidad · Diseño", PROMO: "Encuentra tu laptop ideal hoy" }]
     });
   }
 
-  // ── Guardrail 4: Off-topic detection ─────────────────────────────
   if (isOffTopic(query)) {
-    console.log(`⚠️ Consulta off-topic de IP ${ip}: "${query}"`);
     return res.json({
-      message: "Solo puedo ayudarte con laptops ASUS. ¿Estás buscando una laptop para gaming, trabajo, universidad o diseño? 😊",
-      items: [{
-        TITLE: "Explora nuestras laptops ASUS",
-        TITLE_DISPLAY: "Ver laptops disponibles",
-        PRECIO_REGULAR_FORMAT: "",
-        PRECIO_OFERTA_FORMAT: "",
-        PRECIO_REGULAR: 0,
-        PRECIO_OFERTA: 0,
-        URL: "https://www.asus.com/co/store/",
-        IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800",
-        SPECS: "Gaming · Trabajo · Universidad · Diseño",
-        PROMO: "🚀 Encuentra tu laptop ideal hoy"
-      }]
+      message: "Solo puedo ayudarte con laptops ASUS. ¿Estás buscando una laptop para gaming, trabajo, universidad o diseño?",
+      items: [{ TITLE: "Explora nuestras laptops ASUS", TITLE_DISPLAY: "Ver laptops disponibles", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Gaming · Trabajo · Universidad · Diseño", PROMO: "Encuentra tu laptop ideal hoy" }]
     });
   }
 
   try {
     const q = query.toLowerCase();
 
-    // ── Sales redirect — BEFORE service ─────────────────────────────
     const salesWords = [
       "cupon","cupón","codigo descuento","código descuento","promocion","promoción",
       "pedido","mi orden","mi compra","pago","factura","boleta",
@@ -465,23 +312,11 @@ app.get("/anastasia", async (req, res) => {
     if (salesWords.some(w => q.includes(w))) {
       console.log(`💼 Consulta de ventas de IP ${ip}: "${query}"`);
       return res.json({
-        message: "Para consultas sobre cupones, pedidos o promociones, nuestros asesores de ventas pueden ayudarte. Reinicia el chat y selecciona 'Hablar con un asesor', o escríbenos a soporteventas.co@asus.com 📧",
-        items: [{
-          TITLE: "Asesores de Ventas ASUS Colombia",
-          TITLE_DISPLAY: "Contactar asesor de ventas",
-          PRECIO_REGULAR_FORMAT: "",
-          PRECIO_OFERTA_FORMAT: "",
-          PRECIO_REGULAR: 0,
-          PRECIO_OFERTA: 0,
-          URL: "https://www.asus.com/co/store/",
-          IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800",
-          SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00",
-          PROMO: "📧 soporteventas.co@asus.com"
-        }]
+        message: "Para consultas sobre cupones, pedidos o promociones, nuestros asesores de ventas pueden ayudarte. Reinicia el chat y selecciona 'Hablar con un asesor', o escríbenos a soporteventas.co@asus.com",
+        items: [{ TITLE: "Asesores de Ventas ASUS Colombia", TITLE_DISPLAY: "Contactar asesor de ventas", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00", PROMO: "soporteventas.co@asus.com" }]
       });
     }
 
-    // ── Customer service redirect — BEFORE search ────────────────────
     const serviceWords = [
       "cargador","cargadora","charger","cable carga","adaptador","fuente de poder",
       "bateria hinchada","bateria de repuesto","cambio de bateria",
@@ -510,230 +345,135 @@ app.get("/anastasia", async (req, res) => {
     const mentionsBattery = /\b(bateria|batería|battery|pila)\b/.test(q);
     const batteryProblem = mentionsBattery && /(hinchada|no carga|no funciona|repuesto|reemplaz|rota|muerta|dañ|estallad|inflada)/.test(q);
     const batteryFeature = mentionsBattery && /(duracion|duración|autonomia|autonomía|horas|dura|larga|buena|precio|hasta|pesos|millones|busco|quiero|recomienda|presupuesto)/.test(q);
-
     const isServiceRequest = serviceWords.some(w => q.includes(w)) || (batteryProblem && !batteryFeature);
 
     if (isServiceRequest) {
       return res.json({
         message: "Lo sentimos, este producto o servicio no está disponible en nuestra tienda online ASUS Colombia. Para más información contacta a nuestro equipo de soporte técnico:",
-        items: [{
-          TITLE: "Servicio al Cliente ASUS Colombia",
-          TITLE_DISPLAY: "Contáctanos para ayudarte",
-          PRECIO_REGULAR_FORMAT: "",
-          PRECIO_OFERTA_FORMAT: "",
-          PRECIO_REGULAR: 0,
-          PRECIO_OFERTA: 0,
-          URL: "https://www.asus.com/co/support/",
-          IMAGEN: "https://www.asus.com/media/global/gallery/lVTlQHxDPCyHhWVU_setting_fff_1_90_end_1000.png",
-          SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00",
-          PROMO: "📞 (601) 241 55 28"
-        }]
+        items: [{ TITLE: "Servicio al Cliente ASUS Colombia", TITLE_DISPLAY: "Contáctanos para ayudarte", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/support/", IMAGEN: "https://www.asus.com/media/global/gallery/lVTlQHxDPCyHhWVU_setting_fff_1_90_end_1000.png", SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00", PROMO: "(601) 241 55 28" }]
       });
     }
 
-    // ── ROG Ally / handheld redirect — BEFORE search ─────────────────
     const isHandheld = q.includes("ally") || q.includes("rog ally") ||
       (q.includes("handheld") && !q.includes("laptop")) ||
       q.includes("steam deck") ||
       (q.includes("consola") && q.includes("portatil"));
-
     if (isHandheld) {
       return res.json({
-        message: "¡Lo sentimos! La ROG Ally no está disponible en stock en este momento. ¡Vuelve pronto! 🎮 ¿Te puedo ayudar a encontrar una laptop gaming mientras tanto?",
-        items: [{
-          TITLE: "ROG Ally — Sin stock por ahora",
-          TITLE_DISPLAY: "Vuelve pronto · Próximamente",
-          PRECIO_REGULAR_FORMAT: "",
-          PRECIO_OFERTA_FORMAT: "",
-          PRECIO_REGULAR: 0,
-          PRECIO_OFERTA: 0,
-          URL: "https://www.asus.com/co/store/",
-          IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800",
-          SPECS: "Consola portátil gaming · Sin stock por ahora",
-          PROMO: "🎮 Próximamente disponible"
-        }]
+        message: "La ROG Ally no está disponible en stock en este momento. ¿Te puedo ayudar a encontrar una laptop gaming mientras tanto?",
+        items: [{ TITLE: "ROG Ally - Sin stock por ahora", TITLE_DISPLAY: "Vuelve pronto - Proximamente", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Consola portatil gaming - Sin stock por ahora", PROMO: "Proximamente disponible" }]
       });
     }
 
-    // ── Non-laptop products redirect — BEFORE search ─────────────────
     const nonLaptopWords = [
       "torre","desktop","pc de escritorio","computadora de escritorio",
       "all in one","all-in-one","rog pc","rog desktop","mini pc","nuc",
-      "monitor externo","pantalla externa",
-      "tablet","ipad",
-      "servidor","server","nas",
-      "componentes","armar pc","build pc","pc armada","procesador suelto",
-      "television","televisor","smart tv",
-      "smartwatch","reloj inteligente",
-      "proyector","ups","estabilizador",
+      "monitor externo","pantalla externa","tablet","ipad",
+      "servidor","server","nas","componentes","armar pc","build pc","pc armada","procesador suelto",
+      "television","televisor","smart tv","smartwatch","reloj inteligente","proyector","ups","estabilizador",
       "bolso","mochila","maletin","maletín","funda","estuche","backpack","forro",
       "mouse","keyboard","teclado externo","audifonos","audífonos","headset","webcam","auriculares","auricular",
       "parlante","bocina","altavoz"
     ];
     const isNonLaptop = nonLaptopWords.some(w => q.includes(w)) ||
       (q.includes("monitor") && !q.includes("laptop") && !q.includes("pantalla de laptop"));
-
     if (isNonLaptop) {
       return res.json({
-        message: "Por el momento solo contamos con laptops ASUS en nuestra tienda online en Colombia. ¡Tenemos opciones increíbles para gaming, trabajo, diseño y más! ¿Te ayudo a encontrar la laptop perfecta para ti?",
-        items: [{
-          TITLE: "Explora nuestras laptops ASUS",
-          TITLE_DISPLAY: "Ver laptops disponibles",
-          PRECIO_REGULAR_FORMAT: "",
-          PRECIO_OFERTA_FORMAT: "",
-          PRECIO_REGULAR: 0,
-          PRECIO_OFERTA: 0,
-          URL: "https://www.asus.com/co/store/",
-          IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800",
-          SPECS: "Gaming · Trabajo · Universidad · Diseño",
-          PROMO: "🚀 Encuentra tu laptop ideal hoy"
-        }]
+        message: "Por el momento solo contamos con laptops ASUS en nuestra tienda online en Colombia. ¿Te ayudo a encontrar la laptop perfecta para ti?",
+        items: [{ TITLE: "Explora nuestras laptops ASUS", TITLE_DISPLAY: "Ver laptops disponibles", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Gaming · Trabajo · Universidad · Diseño", PROMO: "Encuentra tu laptop ideal hoy" }]
       });
     }
 
-    // ── NOW search products ──────────────────────────────────────────
     const relevant = searchProducts(query);
     if (relevant.length === 0) return res.json({ items: [] });
 
-    // ── Detect query intent ──────────────────────────────────────────
     const budgetWords = ["barata","barato","económico","economico","economica","económica","cheap","precio bajo","más barata","mas barata","menor precio","más económica","mas economica","low cost","accesible","pesos","plata","billete"];
     const powerWords = ["potente","poderosa","poderoso","mejor","top","gama alta","más potente","mas potente","la mejor","lo mejor","high end","berraca","berracas"];
     const isBudget = budgetWords.some(w => q.includes(w));
     const isPower = powerWords.some(w => q.includes(w));
 
-    // ── Detect specific specs in query ───────────────────────────────
     const processorMatch = q.match(/\bi[3579]\b/) || q.match(/ryzen\s*[3579]/) || q.match(/core\s*ultra/);
     const gpuMatch = q.match(/rtx\s*\d{4}/) || q.match(/gtx\s*\d{4}/);
 
-    // ── Filter relevant by specific specs if mentioned ───────────────
     let specFiltered = relevant;
     if (processorMatch) {
       const proc = processorMatch[0].toLowerCase().replace(/\s+/g, "");
-      const withSpec = relevant.filter(p => {
-        const text = `${p.title} ${p.description} ${p.model} ${p.link}`.toLowerCase().replace(/\s+/g, "");
-        return text.includes(proc);
-      });
+      const withSpec = relevant.filter(p => `${p.title} ${p.description} ${p.model} ${p.link}`.toLowerCase().replace(/\s+/g, "").includes(proc));
       if (withSpec.length > 0) specFiltered = withSpec;
     }
     if (gpuMatch) {
       const gpu = gpuMatch[0].toLowerCase().replace(/\s+/g, "");
-      const withGpu = specFiltered.filter(p => {
-        const text = `${p.title} ${p.description} ${p.model} ${p.link}`.toLowerCase().replace(/\s+/g, "");
-        return text.includes(gpu);
-      });
+      const withGpu = specFiltered.filter(p => `${p.title} ${p.description} ${p.model} ${p.link}`.toLowerCase().replace(/\s+/g, "").includes(gpu));
       if (withGpu.length > 0) specFiltered = withGpu;
     }
 
-    // ── Determine products to send based on intent ───────────────────
     let productsToSend, exactCount, messageType;
 
     if (isBudget && specFiltered.length > 0 && specFiltered.length < relevant.length) {
-      productsToSend = [...specFiltered]
-        .sort((a, b) => (parseFloat(a.price) || 999999) - (parseFloat(b.price) || 999999))
-        .slice(0, 3);
-      exactCount = productsToSend.length;
-      messageType = "budget_spec";
-
+      productsToSend = [...specFiltered].sort((a, b) => (parseFloat(a.price) || 999999) - (parseFloat(b.price) || 999999)).slice(0, 3);
+      exactCount = productsToSend.length; messageType = "budget_spec";
     } else if (isBudget) {
-      productsToSend = [...relevant]
-        .sort((a, b) => (parseFloat(a.price) || 999999) - (parseFloat(b.price) || 999999))
-        .slice(0, 3);
-      exactCount = productsToSend.length;
-      messageType = "budget";
-
+      productsToSend = [...relevant].sort((a, b) => (parseFloat(a.price) || 999999) - (parseFloat(b.price) || 999999)).slice(0, 3);
+      exactCount = productsToSend.length; messageType = "budget";
     } else if (isPower) {
-      productsToSend = [...specFiltered]
-        .sort((a, b) => (parseFloat(b.price) || 0) - (parseFloat(a.price) || 0))
-        .slice(0, 3);
-      exactCount = productsToSend.length;
-      messageType = "power";
-
+      productsToSend = [...specFiltered].sort((a, b) => (parseFloat(b.price) || 0) - (parseFloat(a.price) || 0)).slice(0, 3);
+      exactCount = productsToSend.length; messageType = "power";
     } else if (specFiltered.length > 0 && specFiltered.length < relevant.length) {
-      productsToSend = specFiltered.slice(0, 3);
-      exactCount = productsToSend.length;
-      messageType = "spec";
-
+      productsToSend = specFiltered.slice(0, 3); exactCount = productsToSend.length; messageType = "spec";
     } else {
       const exactMatches = exactMatchProducts(query, relevant);
       if (exactMatches.length > 0) {
-        productsToSend = exactMatches.slice(0, 3);
-        exactCount = productsToSend.length;
-        messageType = "exact";
+        productsToSend = exactMatches.slice(0, 3); exactCount = productsToSend.length; messageType = "exact";
       } else {
-        productsToSend = relevant.slice(0, 3);
-        exactCount = 0;
-        messageType = "noMatch";
+        productsToSend = relevant.slice(0, 3); exactCount = 0; messageType = "noMatch";
       }
     }
 
-    // ── Build user message based on intent ───────────────────────────
     let userMessage;
     if (messageType === "budget_spec") {
-      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops económicas con esa especificación, ordenadas de menor a mayor precio. Muéstralas TODAS. Para el campo MESSAGE escribe una frase corta y natural en español colombiano que mencione que son las opciones más accesibles para lo que el cliente necesita. Adáptalo al contexto real del cliente.`;
+      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops economicas con esa especificacion, ordenadas de menor a mayor precio. Muestralas TODAS. MESSAGE: frase corta en español colombiano.`;
     } else if (messageType === "budget") {
-      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops económicas ordenadas de menor a mayor precio. Muéstralas TODAS. Para el campo MESSAGE escribe una frase corta y natural en español colombiano reconociendo lo que el cliente busca. Adáptalo al contexto real.`;
+      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops economicas ordenadas de menor a mayor precio. Muestralas TODAS. MESSAGE: frase corta en español colombiano.`;
     } else if (messageType === "power") {
-      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops potentes ordenadas de mayor a menor precio. Muéstralas TODAS. Para el campo MESSAGE escribe una frase corta y natural en español colombiano que mencione para qué sirven estas laptops. Adáptalo al contexto real del cliente.`;
+      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops potentes ordenadas de mayor a menor precio. Muestralas TODAS. MESSAGE: frase corta en español colombiano.`;
     } else if (messageType === "spec") {
-      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops que coinciden con esa especificación. Muestra SOLO esas ${productsToSend.length}. NO agregues más. Para el campo MESSAGE escribe una frase corta y natural en español colombiano. Adáptalo al contexto real.`;
+      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops con esa especificacion. Muestra SOLO esas. MESSAGE: frase corta en español colombiano.`;
     } else if (messageType === "exact") {
-      userMessage = `El cliente busca: "${query}". Hay ${exactCount} productos que coinciden exactamente. Muestra SOLO esos ${exactCount}. NO agregues más aunque sean menos de 3. Para el campo MESSAGE escribe una frase corta y natural en español colombiano celebrando que encontramos lo que buscaba.`;
+      userMessage = `El cliente busca: "${query}". Hay ${exactCount} productos que coinciden exactamente. Muestra SOLO esos ${exactCount}. MESSAGE: frase corta celebrando que encontramos lo que buscaba.`;
     } else {
-      userMessage = `El cliente busca: "${query}". No hay productos exactos en el catálogo pero tenemos ${productsToSend.length} alternativas similares. Muéstralas TODAS.
-
-REGLAS IMPORTANTES:
-- El campo TITLE debe ser el nombre real del producto alternativo, NUNCA el texto del cliente
-- El campo MESSAGE debe ser una frase natural y amigable en español colombiano explicando que ese modelo/spec no está disponible pero que tienes estas alternativas similares. NUNCA copies literalmente lo que escribió el cliente`;
+      userMessage = `El cliente busca: "${query}". No hay productos exactos pero tenemos ${productsToSend.length} alternativas similares. Muestralas TODAS. MESSAGE: frase amigable en español colombiano explicando que son alternativas similares. NUNCA copies el texto del cliente en el TITLE.`;
     }
 
-    // ── Build product list with promo hint ───────────────────────────
     const productList = productsToSend.map((p, i) => {
       const promo = calcPromo(p.regularPrice, p.price);
       const promoHint = promo ? `PROMO_CALCULADO: ${promo}` : `PROMO_CALCULADO: none`;
-      const safeDesc = p.description.replace(/"/g, "'");
       const sku = p.partNumber || p.model;
-      return `${i+1}. ${p.title} | Precio oferta: ${p.price} | Precio regular: ${p.regularPrice} | Modelo: ${p.model} | URL: ${addUTM(p.link, sku)} | Imagen: ${p.image} | Descripcion: ${safeDesc} | ${promoHint}`;
+      return `${i+1}. ${p.title} | Precio oferta: ${p.price} | Precio regular: ${p.regularPrice} | Modelo: ${p.model} | URL: ${addUTM(p.link, sku)} | Imagen: ${p.image} | Descripcion: ${p.description.replace(/"/g, "'")} | ${promoHint}`;
     }).join("\n");
 
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 2500,
       system: `Eres AnastasIA, experta en laptops ASUS para clientes colombianos.
-El cliente puede escribir con errores ortográficos o español informal. Entiende colombianismos pero responde siempre de forma amigable y profesional.
-TONO: Amigable y profesional con calidez colombiana. Puedes usar expresiones como "berraca" o "está muy buena" ocasionalmente, pero evita jerga muy informal. Escribe como un vendedor experto de ASUS Colombia que es simpático y cercano.
-Ejemplos de lo que el cliente puede escribir:
-- "algo pa jugar" = gaming
-- "laptop barata" = presupuesto ajustado
-- "pa la u" = uso universitario
-- "pa el trabajo" = uso laboral
-- "pa diseño" = necesita buena GPU y pantalla
-- "la mas berraca" = top de gama
-- "liviana" = portabilidad
-- "cuánto vale" = cuánto cuesta
-- "laptop i9" = alto rendimiento
-- "32gb ram" = ofrecer el de mayor RAM disponible
+El cliente puede escribir con errores ortograficos o español informal. Entiende colombianismos pero responde siempre de forma amigable y profesional.
+TONO: Amigable y profesional con calidez colombiana. Puedes usar expresiones como "berraca" o "esta muy buena" ocasionalmente.
 
-CATÁLOGO DISPONIBLE:
+CATALOGO DISPONIBLE:
 ${productList}
 
 INSTRUCCIONES ESTRICTAS:
-- Analiza la intención real del usuario aunque tenga errores o use colombianismos
-- Si el usuario pide algo económico, prioriza los de menor precio
-- Si pide gaming, prioriza los que tengan RTX o GPU dedicada
-- Si pide para la u o el trabajo, prioriza los livianos y versátiles
-- El campo TITLE siempre debe ser el nombre real del producto del catálogo
-- NUNCA menciones marcas competidoras como Lenovo, HP, Dell, Acer, Samsung, Apple, MSI o cualquier otra marca que no sea ASUS en ningún campo del JSON ni en el mensaje
+- El campo TITLE siempre debe ser el nombre real del producto del catalogo
+- NUNCA menciones marcas competidoras como Lenovo, HP, Dell, Acer, Samsung, Apple, MSI
 - El campo MESSAGE debe ser siempre una frase natural y amigable, nunca una copia del texto del cliente
-- Para SPECS extrae SOLO estos datos del campo Descripcion: procesador | RAM | GPU | almacenamiento | tamaño pantalla. IGNORA todo lo demas como Sistema Operativo, cache, etc. NUNCA uses comillas dobles. Ejemplo: Ryzen 5 7535HS | 16GB DDR5 | RTX 3050 | 512GB SSD | 15pulg — maximo 90 caracteres
+- Para SPECS extrae SOLO: procesador | RAM | GPU | almacenamiento | tamaño pantalla. NUNCA uses comillas dobles. Maximo 90 caracteres
 - Los precios son en pesos colombianos COP con formato $23.999.900
-- Para PROMO: si PROMO_CALCULADO no es none, usalo como base pero agregale al final un tagline corto de maximo 20 caracteres con emoji segun el tipo de laptop. Ejemplos: $23.999.900 → $19.999.900 ⚡ ¡Oferta! · 🔥 Top gaming. Si es none escribe el precio oferta en formato COP seguido de punto medio y emoji y una frase corta de maximo 40 caracteres con beneficio claro. Ejemplos: $23.999.900 · ✨ Ideal para diseño versatil o $15.999.900 · 🎯 Perfecta para la universidad
-- IMPORTANTE: Los valores de todos los campos de texto NO deben contener comillas dobles internas.
-- Devuelve SOLO un JSON valido sin texto adicional sin markdown:
-{"message":"texto del mensaje general","items":[{"TITLE":"nombre completo","TITLE_DISPLAY":"nombre corto max 40 chars","PRECIO_REGULAR_FORMAT":"$23.999.900","PRECIO_OFERTA_FORMAT":"$19.999.900","PRECIO_REGULAR":23999900,"PRECIO_OFERTA":19999900,"URL":"url exacta del producto","IMAGEN":"url exacta de la imagen","SPECS":"procesador RAM GPU almacenamiento maximo 90 caracteres","PROMO":"descuento o tagline maximo 50 caracteres"}]}`,
+- Para PROMO: si PROMO_CALCULADO no es none usalo como base y agrega tagline corto con emoji. Si es none escribe precio + emoji + frase corta.
+- Sin comillas dobles internas en ningun campo de texto.
+- Devuelve SOLO JSON valido sin markdown:
+{"message":"texto","items":[{"TITLE":"nombre completo","TITLE_DISPLAY":"nombre corto max 40 chars","PRECIO_REGULAR_FORMAT":"$23.999.900","PRECIO_OFERTA_FORMAT":"$19.999.900","PRECIO_REGULAR":23999900,"PRECIO_OFERTA":19999900,"URL":"url","IMAGEN":"url imagen","SPECS":"specs max 90 chars","PROMO":"promo max 50 chars"}]}`,
       messages: [{ role: "user", content: userMessage }],
     });
 
-    // ── Parse JSON con repair fallback ────────────────────────────────
     const raw = response.content[0].text.trim().replace(/```json|```/g, "").trim();
     let result;
     try {
@@ -742,15 +482,9 @@ INSTRUCCIONES ESTRICTAS:
       const lastValidItem = raw.lastIndexOf("},");
       if (lastValidItem > 0) {
         const repaired = raw.slice(0, lastValidItem + 1) + "]}";
-        try {
-          result = JSON.parse(repaired);
-          console.log(`⚠️ JSON reparado: ${result.items?.length || 0} productos rescatados`);
-        } catch {
-          throw parseErr;
-        }
-      } else {
-        throw parseErr;
-      }
+        try { result = JSON.parse(repaired); console.log(`⚠️ JSON reparado: ${result.items?.length || 0} productos`); }
+        catch { throw parseErr; }
+      } else { throw parseErr; }
     }
     console.log(`✅ AnastasIA CO devuelve ${result.items?.length || 0} productos`);
     return res.json(result);
@@ -761,14 +495,12 @@ INSTRUCCIONES ESTRICTAS:
       const promo = calcPromo(p.regularPrice, p.price);
       const sku = p.partNumber || p.model;
       return {
-        TITLE: p.title,
-        TITLE_DISPLAY: p.title.slice(0, 50),
+        TITLE: p.title, TITLE_DISPLAY: p.title.slice(0, 50),
         PRECIO_REGULAR_FORMAT: formatCOP(parseFloat(p.regularPrice || p.price) || 0),
         PRECIO_OFERTA_FORMAT: formatCOP(parseFloat(p.price) || 0),
         PRECIO_REGULAR: parseFloat(p.regularPrice || p.price) || 0,
         PRECIO_OFERTA: parseFloat(p.price) || 0,
-        URL: addUTM(p.link, sku),
-        IMAGEN: p.image,
+        URL: addUTM(p.link, sku), IMAGEN: p.image,
         SPECS: p.description ? p.description.replace(/"/g, "'").slice(0, 90) : "",
         PROMO: promo || "Visita nuestra tienda ASUS Colombia",
       };
