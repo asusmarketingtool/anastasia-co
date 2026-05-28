@@ -96,17 +96,17 @@ async function refreshCatalog() {
       const val = (v) => { if (!v) return ""; if (typeof v === "string") return v.trim(); if (typeof v === "number") return String(v); if (v["#text"]) return String(v["#text"]).trim(); return ""; };
       const stripHtml = (s) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").replace(/&nbsp;/g, " ").replace(/&[a-z]+;/g, "").trim().slice(0, 300);
       return {
-        id: val(item.Part_Number) || val(item.Model) || "",
-        title: val(item.Name) || val(item.title) || "",
-        description: stripHtml(val(item.Short_Description) || val(item.description) || ""),
-        price: val(item.Offer_Price) || val(item.Regular_Price) || val(item.price) || "",
+        id:           val(item.Part_Number) || val(item.Model) || "",
+        title:        val(item.Name)        || val(item.title) || "",
+        description:  stripHtml(val(item.Short_Description) || val(item.description) || ""),
+        price:        val(item.Offer_Price) || val(item.Regular_Price) || val(item.price) || "",
         regularPrice: val(item.Regular_Price) || "",
-        link: val(item.Product_URL) || val(item.link) || "",
-        image: val(item.Main_Image_URL) || val(item.image) || "",
-        brand: "ASUS",
-        model: val(item.Model) || "",
-        partNumber: val(item.Part_Number) || "",
-        category: val(item.BU) || val(item.category) || "",
+        link:         val(item.Product_URL) || val(item.link)  || "",
+        image:        val(item.Main_Image_URL) || val(item.image) || "",
+        brand:        "ASUS",
+        model:        val(item.Model)       || "",
+        partNumber:   val(item.Part_Number) || "",
+        category:     val(item.BU)          || val(item.category) || "",
         availability: val(item.Availability) || val(item.availability) || "in stock",
       };
     }).filter(p => {
@@ -180,11 +180,6 @@ function exactMatchProducts(query, results) {
   });
 }
 
-function formatProductsForPrompt(products) {
-  if (products.length === 0) return "No encontré productos que coincidan exactamente.";
-  return products.map(p => `• ${p.title}${p.brand ? ` (${p.brand})` : ""} — ${p.price}${p.category ? ` | Categoría: ${p.category}` : ""}${p.link ? ` | URL: ${p.link}` : ""}`).join("\n");
-}
-
 function calcPromo(regularPrice, price) {
   const regular = parseFloat(regularPrice) || 0;
   const offer = parseFloat(price) || 0;
@@ -195,20 +190,18 @@ function calcPromo(regularPrice, price) {
 
 async function askClaude(conversationId, userMessage) {
   const relevant = searchProducts(userMessage);
-  const productList = formatProductsForPrompt(relevant);
   if (!conversations[conversationId]) conversations[conversationId] = [];
   const history = conversations[conversationId];
-  const systemPrompt = `Eres un asistente de ventas amigable y experto de esta tienda online.
-Tu objetivo es ayudar al cliente a encontrar el producto perfecto según sus necesidades.
-PRODUCTOS DISPONIBLES AHORA MISMO (en stock):
+  const productList = relevant.map(p => `• ${p.title} — ${p.price}${p.link ? ` | URL: ${p.link}` : ""}`).join("\n");
+  const systemPrompt = `Eres un asistente de ventas amigable y experto de esta tienda online ASUS Colombia.
+PRODUCTOS DISPONIBLES:
 ${productList}
 INSTRUCCIONES:
-- Si no tienes suficiente información del cliente, haz UNA pregunta específica para entender mejor qué necesita.
-- Cuando recomiendas, explica brevemente POR QUÉ ese producto encaja con lo que pidió.
-- Recomienda máximo 2-3 productos. Siempre incluye el link del producto.
-- Si el producto no está en la lista de disponibles, no lo menciones.
-- Responde siempre en el mismo idioma en que te escribe el cliente.
-- Sé conciso: respuestas cortas, conversacionales.`;
+- Haz UNA pregunta específica si necesitas más info.
+- Explica brevemente POR QUÉ el producto encaja con lo que pidió.
+- Recomienda máximo 2-3 productos con su link.
+- Solo menciona productos de la lista.
+- Responde en el mismo idioma del cliente. Sé conciso.`;
   const messages = [...history.slice(-CONFIG.CONVERSATION_HISTORY), { role: "user", content: userMessage }];
   const response = await anthropic.messages.create({ model: "claude-haiku-4-5-20251001", max_tokens: 500, system: systemPrompt, messages });
   const reply = response.content[0].text;
@@ -257,11 +250,13 @@ app.get("/catalog/search", (req, res) => {
 });
 
 app.get("/anastasia", async (req, res) => {
+  const tStart = Date.now();
   const query = req.query.q || req.query.query || req.query.busqueda || "";
   const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
   console.log(`🤖 AnastasIA CO consulta: "${query}"`);
   if (!query) return res.json({ items: [] });
 
+  // ── Guardrail 0: URL detector ────────────────────────────────────
   if (query.startsWith("http://") || query.startsWith("https://")) {
     return res.json({
       message: "Solo puedo ayudarte con recomendaciones de laptops ASUS. ¿Qué tipo de laptop estás buscando?",
@@ -269,6 +264,7 @@ app.get("/anastasia", async (req, res) => {
     });
   }
 
+  // ── Guardrail 1: Query length ────────────────────────────────────
   if (query.length > CONFIG.MAX_QUERY_LENGTH) {
     return res.json({
       message: "Tu mensaje es muy largo. Por favor escribe una consulta más corta.",
@@ -276,6 +272,7 @@ app.get("/anastasia", async (req, res) => {
     });
   }
 
+  // ── Guardrail 2: Rate limiting ───────────────────────────────────
   if (isRateLimited(ip)) {
     return res.json({
       message: "Has realizado demasiadas consultas en poco tiempo. Por favor espera unos minutos e intenta de nuevo.",
@@ -283,6 +280,7 @@ app.get("/anastasia", async (req, res) => {
     });
   }
 
+  // ── Guardrail 3: Spam detection ──────────────────────────────────
   if (isSpam(ip, query)) {
     return res.json({
       message: "Parece que estás repitiendo la misma búsqueda. ¿Puedo ayudarte con algo más específico?",
@@ -290,6 +288,7 @@ app.get("/anastasia", async (req, res) => {
     });
   }
 
+  // ── Guardrail 4: Off-topic detection ─────────────────────────────
   if (isOffTopic(query)) {
     return res.json({
       message: "Solo puedo ayudarte con laptops ASUS. ¿Estás buscando una laptop para gaming, trabajo, universidad o diseño?",
@@ -300,6 +299,7 @@ app.get("/anastasia", async (req, res) => {
   try {
     const q = query.toLowerCase();
 
+    // ── Sales redirect ───────────────────────────────────────────────
     const salesWords = [
       "cupon","cupón","codigo descuento","código descuento","promocion","promoción",
       "pedido","mi orden","mi compra","pago","factura","boleta",
@@ -310,13 +310,13 @@ app.get("/anastasia", async (req, res) => {
       "asesor","asesores","agente humano","hablar con humano","hablar con persona","hablar con alguien","persona real",
     ];
     if (salesWords.some(w => q.includes(w))) {
-      console.log(`💼 Consulta de ventas de IP ${ip}: "${query}"`);
       return res.json({
         message: "Para consultas sobre cupones, pedidos o promociones, nuestros asesores de ventas pueden ayudarte. Reinicia el chat y selecciona 'Hablar con un asesor', o escríbenos a soporteventas.co@asus.com",
         items: [{ TITLE: "Asesores de Ventas ASUS Colombia", TITLE_DISPLAY: "Contactar asesor de ventas", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00", PROMO: "soporteventas.co@asus.com" }]
       });
     }
 
+    // ── Service redirect ─────────────────────────────────────────────
     const serviceWords = [
       "cargador","cargadora","charger","cable carga","adaptador","fuente de poder",
       "bateria hinchada","bateria de repuesto","cambio de bateria",
@@ -338,22 +338,19 @@ app.get("/anastasia", async (req, res) => {
       "wifi no funciona","no conecta","no se conecta",
       "instalar windows","activar windows","actualizacion","actualizar",
       "wifi","wi-fi","access point","punto de acceso","switch de red","hub de red",
-      "ups","no break","estabilizador",
-      "proyector","smartwatch","reloj inteligente"
+      "ups","no break","estabilizador","proyector","smartwatch","reloj inteligente",
     ];
-
     const mentionsBattery = /\b(bateria|batería|battery|pila)\b/.test(q);
     const batteryProblem = mentionsBattery && /(hinchada|no carga|no funciona|repuesto|reemplaz|rota|muerta|dañ|estallad|inflada)/.test(q);
     const batteryFeature = mentionsBattery && /(duracion|duración|autonomia|autonomía|horas|dura|larga|buena|precio|hasta|pesos|millones|busco|quiero|recomienda|presupuesto)/.test(q);
-    const isServiceRequest = serviceWords.some(w => q.includes(w)) || (batteryProblem && !batteryFeature);
-
-    if (isServiceRequest) {
+    if (serviceWords.some(w => q.includes(w)) || (batteryProblem && !batteryFeature)) {
       return res.json({
         message: "Lo sentimos, este producto o servicio no está disponible en nuestra tienda online ASUS Colombia. Para más información contacta a nuestro equipo de soporte técnico:",
         items: [{ TITLE: "Servicio al Cliente ASUS Colombia", TITLE_DISPLAY: "Contáctanos para ayudarte", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/support/", IMAGEN: "https://www.asus.com/media/global/gallery/lVTlQHxDPCyHhWVU_setting_fff_1_90_end_1000.png", SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00", PROMO: "(601) 241 55 28" }]
       });
     }
 
+    // ── ROG Ally redirect ────────────────────────────────────────────
     const isHandheld = q.includes("ally") || q.includes("rog ally") ||
       (q.includes("handheld") && !q.includes("laptop")) ||
       q.includes("steam deck") ||
@@ -365,6 +362,7 @@ app.get("/anastasia", async (req, res) => {
       });
     }
 
+    // ── Non-laptop redirect ──────────────────────────────────────────
     const nonLaptopWords = [
       "torre","desktop","pc de escritorio","computadora de escritorio",
       "all in one","all-in-one","rog pc","rog desktop","mini pc","nuc",
@@ -373,136 +371,154 @@ app.get("/anastasia", async (req, res) => {
       "television","televisor","smart tv","smartwatch","reloj inteligente","proyector","ups","estabilizador",
       "bolso","mochila","maletin","maletín","funda","estuche","backpack","forro",
       "mouse","keyboard","teclado externo","audifonos","audífonos","headset","webcam","auriculares","auricular",
-      "parlante","bocina","altavoz"
+      "parlante","bocina","altavoz",
     ];
-    const isNonLaptop = nonLaptopWords.some(w => q.includes(w)) ||
-      (q.includes("monitor") && !q.includes("laptop") && !q.includes("pantalla de laptop"));
-    if (isNonLaptop) {
+    if (nonLaptopWords.some(w => q.includes(w)) || (q.includes("monitor") && !q.includes("laptop") && !q.includes("pantalla de laptop"))) {
       return res.json({
         message: "Por el momento solo contamos con laptops ASUS en nuestra tienda online en Colombia. ¿Te ayudo a encontrar la laptop perfecta para ti?",
         items: [{ TITLE: "Explora nuestras laptops ASUS", TITLE_DISPLAY: "Ver laptops disponibles", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Gaming · Trabajo · Universidad · Diseño", PROMO: "Encuentra tu laptop ideal hoy" }]
       });
     }
 
+    // ── Search products ──────────────────────────────────────────────
     const relevant = searchProducts(query);
     if (relevant.length === 0) return res.json({ items: [] });
 
     const budgetWords = ["barata","barato","económico","economico","economica","económica","cheap","precio bajo","más barata","mas barata","menor precio","más económica","mas economica","low cost","accesible","pesos","plata","billete"];
-    const powerWords = ["potente","poderosa","poderoso","mejor","top","gama alta","más potente","mas potente","la mejor","lo mejor","high end","berraca","berracas"];
+    const powerWords  = ["potente","poderosa","poderoso","mejor","top","gama alta","más potente","mas potente","la mejor","lo mejor","high end","berraca","berracas"];
     const isBudget = budgetWords.some(w => q.includes(w));
-    const isPower = powerWords.some(w => q.includes(w));
+    const isPower  = powerWords.some(w => q.includes(w));
 
     const processorMatch = q.match(/\bi[3579]\b/) || q.match(/ryzen\s*[3579]/) || q.match(/core\s*ultra/);
-    const gpuMatch = q.match(/rtx\s*\d{4}/) || q.match(/gtx\s*\d{4}/);
+    const gpuMatch       = q.match(/rtx\s*\d{4}/) || q.match(/gtx\s*\d{4}/);
 
     let specFiltered = relevant;
     if (processorMatch) {
       const proc = processorMatch[0].toLowerCase().replace(/\s+/g, "");
-      const withSpec = relevant.filter(p => `${p.title} ${p.description} ${p.model} ${p.link}`.toLowerCase().replace(/\s+/g, "").includes(proc));
-      if (withSpec.length > 0) specFiltered = withSpec;
+      const w = relevant.filter(p => `${p.title} ${p.description} ${p.model} ${p.link}`.toLowerCase().replace(/\s+/g, "").includes(proc));
+      if (w.length > 0) specFiltered = w;
     }
     if (gpuMatch) {
       const gpu = gpuMatch[0].toLowerCase().replace(/\s+/g, "");
-      const withGpu = specFiltered.filter(p => `${p.title} ${p.description} ${p.model} ${p.link}`.toLowerCase().replace(/\s+/g, "").includes(gpu));
-      if (withGpu.length > 0) specFiltered = withGpu;
+      const w = specFiltered.filter(p => `${p.title} ${p.description} ${p.model} ${p.link}`.toLowerCase().replace(/\s+/g, "").includes(gpu));
+      if (w.length > 0) specFiltered = w;
     }
 
-    let productsToSend, exactCount, messageType;
-
+    let productsToSend, messageType;
     if (isBudget && specFiltered.length > 0 && specFiltered.length < relevant.length) {
-      productsToSend = [...specFiltered].sort((a, b) => (parseFloat(a.price) || 999999) - (parseFloat(b.price) || 999999)).slice(0, 3);
-      exactCount = productsToSend.length; messageType = "budget_spec";
+      productsToSend = [...specFiltered].sort((a, b) => (parseFloat(a.price)||999999) - (parseFloat(b.price)||999999)).slice(0, 3);
+      messageType = "budget_spec";
     } else if (isBudget) {
-      productsToSend = [...relevant].sort((a, b) => (parseFloat(a.price) || 999999) - (parseFloat(b.price) || 999999)).slice(0, 3);
-      exactCount = productsToSend.length; messageType = "budget";
+      productsToSend = [...relevant].sort((a, b) => (parseFloat(a.price)||999999) - (parseFloat(b.price)||999999)).slice(0, 3);
+      messageType = "budget";
     } else if (isPower) {
-      productsToSend = [...specFiltered].sort((a, b) => (parseFloat(b.price) || 0) - (parseFloat(a.price) || 0)).slice(0, 3);
-      exactCount = productsToSend.length; messageType = "power";
+      productsToSend = [...specFiltered].sort((a, b) => (parseFloat(b.price)||0) - (parseFloat(a.price)||0)).slice(0, 3);
+      messageType = "power";
     } else if (specFiltered.length > 0 && specFiltered.length < relevant.length) {
-      productsToSend = specFiltered.slice(0, 3); exactCount = productsToSend.length; messageType = "spec";
+      productsToSend = specFiltered.slice(0, 3);
+      messageType = "spec";
     } else {
       const exactMatches = exactMatchProducts(query, relevant);
       if (exactMatches.length > 0) {
-        productsToSend = exactMatches.slice(0, 3); exactCount = productsToSend.length; messageType = "exact";
+        productsToSend = exactMatches.slice(0, 3);
+        messageType = "exact";
       } else {
-        productsToSend = relevant.slice(0, 3); exactCount = 0; messageType = "noMatch";
+        productsToSend = relevant.slice(0, 3);
+        messageType = "noMatch";
       }
     }
 
-    let userMessage;
-    if (messageType === "budget_spec") {
-      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops economicas con esa especificacion, ordenadas de menor a mayor precio. Muestralas TODAS. MESSAGE: frase corta en español colombiano.`;
-    } else if (messageType === "budget") {
-      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops economicas ordenadas de menor a mayor precio. Muestralas TODAS. MESSAGE: frase corta en español colombiano.`;
-    } else if (messageType === "power") {
-      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops potentes ordenadas de mayor a menor precio. Muestralas TODAS. MESSAGE: frase corta en español colombiano.`;
-    } else if (messageType === "spec") {
-      userMessage = `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops con esa especificacion. Muestra SOLO esas. MESSAGE: frase corta en español colombiano.`;
-    } else if (messageType === "exact") {
-      userMessage = `El cliente busca: "${query}". Hay ${exactCount} productos que coinciden exactamente. Muestra SOLO esos ${exactCount}. MESSAGE: frase corta celebrando que encontramos lo que buscaba.`;
-    } else {
-      userMessage = `El cliente busca: "${query}". No hay productos exactos pero tenemos ${productsToSend.length} alternativas similares. Muestralas TODAS. MESSAGE: frase amigable en español colombiano explicando que son alternativas similares. NUNCA copies el texto del cliente en el TITLE.`;
-    }
+    // ── User message by intent ───────────────────────────────────────
+    const intentMap = {
+      budget_spec: `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops economicas con esa especificacion, de menor a mayor precio. MESSAGE: frase corta en español colombiano.`,
+      budget:      `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops economicas de menor a mayor precio. MESSAGE: frase corta en español colombiano.`,
+      power:       `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops potentes de mayor a menor precio. MESSAGE: frase corta en español colombiano.`,
+      spec:        `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops con esa especificacion. MESSAGE: frase corta en español colombiano.`,
+      exact:       `El cliente busca: "${query}". Hay ${productsToSend.length} productos que coinciden exactamente. MESSAGE: frase corta celebrando que encontramos lo que buscaba.`,
+      noMatch:     `El cliente busca: "${query}". No hay productos exactos pero tenemos ${productsToSend.length} alternativas similares. MESSAGE: frase amigable explicando las alternativas. NUNCA copies el texto del cliente en TITLE.`,
+    };
+    const userMessage = intentMap[messageType];
 
+    // ── Build product list — only what Claude needs ──────────────────
     const productList = productsToSend.map((p, i) => {
       const promo = calcPromo(p.regularPrice, p.price);
       const promoHint = promo ? `PROMO_CALCULADO: ${promo}` : `PROMO_CALCULADO: none`;
-      const sku = p.partNumber || p.model;
-      return `${i+1}. ${p.title} | Precio oferta: ${p.price} | Precio regular: ${p.regularPrice} | Modelo: ${p.model} | URL: ${addUTM(p.link, sku)} | Imagen: ${p.image} | Descripcion: ${p.description.replace(/"/g, "'")} | ${promoHint}`;
+      return `${i+1}. ${p.title} | Precio oferta: ${p.price} | Precio regular: ${p.regularPrice} | Modelo: ${p.model} | Descripcion: ${p.description.replace(/"/g, "'")} | ${promoHint}`;
     }).join("\n");
 
+    // ── Claude call — max_tokens 800 (merge pattern) ─────────────────
+    const tClaude = Date.now();
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 2500,
+      max_tokens: 800,
       system: `Eres AnastasIA, experta en laptops ASUS para clientes colombianos.
-El cliente puede escribir con errores ortograficos o español informal. Entiende colombianismos pero responde siempre de forma amigable y profesional.
-TONO: Amigable y profesional con calidez colombiana. Puedes usar expresiones como "berraca" o "esta muy buena" ocasionalmente.
+Entiende colombianismos (berraca, parce, plata, billete, la u, pega, etc.) pero responde amigable y profesional.
 
-CATALOGO DISPONIBLE:
+CATALOGO (numerado por posicion):
 ${productList}
 
-INSTRUCCIONES ESTRICTAS:
-- El campo TITLE siempre debe ser el nombre real del producto del catalogo
-- NUNCA menciones marcas competidoras como Lenovo, HP, Dell, Acer, Samsung, Apple, MSI
-- El campo MESSAGE debe ser siempre una frase natural y amigable, nunca una copia del texto del cliente
-- Para SPECS extrae SOLO: procesador | RAM | GPU | almacenamiento | tamaño pantalla. NUNCA uses comillas dobles. Maximo 90 caracteres
-- Los precios son en pesos colombianos COP con formato $23.999.900
-- Para PROMO: si PROMO_CALCULADO no es none usalo como base y agrega tagline corto con emoji. Si es none escribe precio + emoji + frase corta.
-- Sin comillas dobles internas en ningun campo de texto.
-- Devuelve SOLO JSON valido sin markdown:
-{"message":"texto","items":[{"TITLE":"nombre completo","TITLE_DISPLAY":"nombre corto max 40 chars","PRECIO_REGULAR_FORMAT":"$23.999.900","PRECIO_OFERTA_FORMAT":"$19.999.900","PRECIO_REGULAR":23999900,"PRECIO_OFERTA":19999900,"URL":"url","IMAGEN":"url imagen","SPECS":"specs max 90 chars","PROMO":"promo max 50 chars"}]}`,
+REGLAS:
+- "message": frase corta y natural en español colombiano. NUNCA copies el texto del cliente. NUNCA menciones otras marcas.
+- "title_display": nombre corto del producto, max 40 caracteres.
+- "specs": procesador | RAM | GPU | almacenamiento | pantalla. Sin comillas dobles. Max 90 chars. Ej: Ryzen 5 7535HS | 16GB DDR5 | RTX 3050 | 512GB SSD | 15pulg
+- "promo": si PROMO_CALCULADO no es none, usalo y agrega tagline corto con emoji (max 20 chars). Si es none, escribe precio en COP + emoji + frase corta (max 40 chars). Total max 60 chars.
+- Sin comillas dobles en ningun valor de texto.
+- Devuelve SOLO JSON valido sin markdown en el ORDEN exacto del catalogo:
+{"message":"texto","items":[{"title_display":"...","specs":"...","promo":"..."}]}`,
       messages: [{ role: "user", content: userMessage }],
     });
+    console.log(`⏱️ Claude API: ${Date.now() - tClaude}ms`);
 
+    // ── Parse JSON ───────────────────────────────────────────────────
     const raw = response.content[0].text.trim().replace(/```json|```/g, "").trim();
     let result;
     try {
       result = JSON.parse(raw);
     } catch (parseErr) {
-      const lastValidItem = raw.lastIndexOf("},");
-      if (lastValidItem > 0) {
-        const repaired = raw.slice(0, lastValidItem + 1) + "]}";
-        try { result = JSON.parse(repaired); console.log(`⚠️ JSON reparado: ${result.items?.length || 0} productos`); }
+      const lastValid = raw.lastIndexOf("},");
+      if (lastValid > 0) {
+        try { result = JSON.parse(raw.slice(0, lastValid + 1) + "]}"); console.log(`⚠️ JSON reparado`); }
         catch { throw parseErr; }
       } else { throw parseErr; }
     }
-    console.log(`✅ AnastasIA CO devuelve ${result.items?.length || 0} productos`);
-    return res.json(result);
+
+    // ── Merge Claude output with catalog data ────────────────────────
+    const claudeItems = Array.isArray(result.items) ? result.items : [];
+    const mergedItems = productsToSend.map((p, i) => {
+      const ci = claudeItems[i] || {};
+      const sku = p.partNumber || p.model;
+      const regularNum = parseFloat(p.regularPrice) || parseFloat(p.price) || 0;
+      const offerNum   = parseFloat(p.price) || 0;
+      return {
+        TITLE:                p.title,
+        TITLE_DISPLAY:        (ci.title_display || p.title).slice(0, 50),
+        PRECIO_REGULAR_FORMAT: formatCOP(regularNum),
+        PRECIO_OFERTA_FORMAT:  formatCOP(offerNum),
+        PRECIO_REGULAR:        regularNum,
+        PRECIO_OFERTA:         offerNum,
+        URL:                  addUTM(p.link, sku),
+        IMAGEN:               p.image,
+        SPECS:                (ci.specs || p.description.slice(0, 90)).replace(/"/g, "'"),
+        PROMO:                ci.promo || calcPromo(p.regularPrice, p.price) || formatCOP(offerNum),
+      };
+    });
+
+    console.log(`✅ AnastasIA CO devuelve ${mergedItems.length} productos · Total: ${Date.now() - tStart}ms`);
+    return res.json({ message: result.message || "", items: mergedItems });
 
   } catch (err) {
     console.error("❌ Error en AnastasIA CO:", err.message);
     const fallback = searchProducts(query).slice(0, 3).map(p => {
-      const promo = calcPromo(p.regularPrice, p.price);
       const sku = p.partNumber || p.model;
       return {
         TITLE: p.title, TITLE_DISPLAY: p.title.slice(0, 50),
         PRECIO_REGULAR_FORMAT: formatCOP(parseFloat(p.regularPrice || p.price) || 0),
-        PRECIO_OFERTA_FORMAT: formatCOP(parseFloat(p.price) || 0),
+        PRECIO_OFERTA_FORMAT:  formatCOP(parseFloat(p.price) || 0),
         PRECIO_REGULAR: parseFloat(p.regularPrice || p.price) || 0,
-        PRECIO_OFERTA: parseFloat(p.price) || 0,
+        PRECIO_OFERTA:  parseFloat(p.price) || 0,
         URL: addUTM(p.link, sku), IMAGEN: p.image,
         SPECS: p.description ? p.description.replace(/"/g, "'").slice(0, 90) : "",
-        PROMO: promo || "Visita nuestra tienda ASUS Colombia",
+        PROMO: calcPromo(p.regularPrice, p.price) || "Visita nuestra tienda ASUS Colombia",
       };
     });
     return res.json({ items: fallback });
@@ -511,6 +527,14 @@ INSTRUCCIONES ESTRICTAS:
 
 await refreshCatalog();
 setInterval(refreshCatalog, CONFIG.FEED_REFRESH_MS);
+
+// ── Keep-alive ping ──────────────────────────────────────────────────
+setInterval(async () => {
+  try {
+    await fetch(`http://localhost:${CONFIG.PORT}/health`);
+    console.log("💓 Keep-alive CO");
+  } catch (e) {}
+}, 5 * 60 * 1000);
 
 app.listen(CONFIG.PORT, () => {
   console.log(`🚀 AnastasIA CO corriendo en puerto ${CONFIG.PORT}`);
