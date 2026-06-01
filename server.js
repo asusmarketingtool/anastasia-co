@@ -74,6 +74,35 @@ function isOffTopic(query) {
   return offTopicWords.some(w => q.includes(w));
 }
 
+// ── Follow-up / conversacional (responde sin re-recomendar) ──────────
+// Detecta preguntas de seguimiento (envíos, garantía, pago, "cuál me
+// conviene") que NO son búsquedas de producto. Solo se usa en GET /anastasia
+// (Magento). Freshchat NO pasa por aquí.
+function isFollowUp(q) {
+  const followUpWords = [
+    // envíos / tiempos de entrega
+    "cuanto tarda","cuánto tarda","cuanto demora","cuánto demora","cuanto tiempo",
+    "cuánto tiempo","tiempo de entrega","tiempo de envio","tiempo de envío",
+    "cuando llega","cuándo llega","cuando me llega","dias habiles","días hábiles",
+    "envio a","envío a","envian a","envían a","llega a","domicilio","despacho",
+    // garantía (info general; daños/repuestos ya los atrapa serviceWords antes)
+    "tiene garantia","tiene garantía","cuanta garantia","cuánta garantía",
+    "anos de garantia","años de garantía","cubre la garantia","cubre la garantía",
+    // pago / financiación (info general)
+    "formas de pago","medios de pago","puedo pagar","aceptan","cuotas","financiacion",
+    "financiación","tarjeta de credito","tarjeta de crédito","addi","sistecredito",
+    // referencia a lo ya mostrado
+    "cual me conviene","cuál me conviene","cual es mejor","cuál es mejor",
+    "cual recomiendas","cuál recomiendas","de esas","de estas","de las que",
+    "la primera","la segunda","la tercera","esa cual","cual de las",
+    "diferencia entre","comparalas","compáralas","cual elijo","cuál elijo",
+    // cortesía / cierre
+    "gracias","muchas gracias","listo","perfecto","de una","vale","entendido",
+    "buenisimo","buenísimo","chevere","chévere","bacano",
+  ];
+  return followUpWords.some(w => q.includes(w));
+}
+
 function formatCOP(amount) {
   return `$${Math.round(amount).toLocaleString("es-CO")}`;
 }
@@ -378,6 +407,32 @@ app.get("/anastasia", async (req, res) => {
         message: "Por el momento solo contamos con laptops ASUS en nuestra tienda online en Colombia. ¿Te ayudo a encontrar la laptop perfecta para ti?",
         items: [{ TITLE: "Explora nuestras laptops ASUS", TITLE_DISPLAY: "Ver laptops disponibles", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Gaming · Trabajo · Universidad · Diseño", PROMO: "Encuentra tu laptop ideal hoy" }]
       });
+    }
+
+    // ── Follow-up / conversacional (responde sin re-recomendar) ──────
+    // Va DESPUÉS de los redirects de asesor/servicio (para que escalen bien)
+    // y ANTES de searchProducts (para cortar el camino del producto).
+    if (isFollowUp(q)) {
+      const tFollow = Date.now();
+      const followResp = await anthropic.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 250,
+        system: `Eres AnastasIA, asesora de laptops ASUS Colombia. Entiendes colombianismos pero respondes amigable y profesional.
+El cliente ya vio recomendaciones de laptops y ahora hace una pregunta de seguimiento (envío, garantía, pago, o cuál elegir).
+REGLAS:
+- Responde SOLO la pregunta, en 1-2 frases cortas, español colombiano natural.
+- NO recomiendes ni listes productos nuevos. NO inventes modelos.
+- Si pregunta por envíos: en Colombia la entrega suele ser 2-3 días hábiles según ciudad.
+- Si pregunta por garantía: las laptops ASUS tienen garantía oficial; los detalles los confirma el asesor.
+- Si pregunta por pago/financiación: se manejan varios medios de pago en la tienda; el asesor da el detalle.
+- Si pregunta cuál le conviene de las que vio: da un criterio general (uso, presupuesto) sin listar productos.
+- Si es un agradecimiento o cierre: responde con cortesía breve y ofrece seguir ayudando.
+- Devuelve SOLO texto plano, sin JSON, sin markdown.`,
+        messages: [{ role: "user", content: query }],
+      });
+      const followText = (followResp.content[0]?.text || "").trim();
+      console.log(`💬 AnastasIA CO follow-up: ${Date.now() - tFollow}ms`);
+      return res.json({ message: followText, items: [] });
     }
 
     // ── Search products ──────────────────────────────────────────────
