@@ -143,6 +143,27 @@ async function refreshCatalog() {
       const regular = parseFloat(p.regularPrice) || 0;
       const offer = parseFloat(p.price) || 0;
       if (regular > 0 && offer > 0 && (offer / regular) < 0.5) return false;
+
+      // ── Filtrar accesorios: el feed trae cases, mochilas, mouse, etc.
+      // que NO son laptops. Sin esto, un case barato se cuela como
+      // "alternativa economica" y rompe la recomendacion.
+      const t = `${p.title} ${p.category}`.toLowerCase();
+      const accessoryWords = [
+        "case","carcasa","funda","cover","sleeve","estuche","forro",
+        "mochila","backpack","maletin","maletín","bolso","morral",
+        "mouse","raton","ratón","teclado","keyboard","headset","diadema",
+        "audifono","audífono","auricular","earbud","webcam",
+        "cargador","charger","adaptador","cable","dock","docking","hub",
+        "soporte","stand","base refrigerante","cooling pad",
+        "memoria usb","pendrive","usb-c","powerbank","power bank",
+        "mousepad","mouse pad","gift","regalo","kit",
+      ];
+      if (accessoryWords.some(w => t.includes(w))) return false;
+
+      // Piso de precio: ninguna laptop ASUS en COP baja de ~$1.000.000.
+      // Accesorios (cases, mouse) estan muy por debajo -> se descartan.
+      if (offer > 0 && offer < 1000000) return false;
+
       return true;
     });
     console.log(`✅ Catálogo CO cargado: ${catalog.length} productos activos`);
@@ -539,8 +560,16 @@ REGLAS:
 
     // ── Merge Claude output with catalog data ────────────────────────
     const claudeItems = Array.isArray(result.items) ? result.items : [];
+
+    // Si Claude no devolvio exactamente un item por producto, su orden NO es
+    // confiable: pegar title/specs por indice mezclaria un producto con otro
+    // (ej. titulo de laptop sobre URL de un case). En ese caso ignoramos el
+    // texto de Claude y usamos los datos del propio producto del catalogo.
+    const aligned = claudeItems.length === productsToSend.length;
+    if (!aligned) console.log(`⚠️ Claude devolvio ${claudeItems.length} items vs ${productsToSend.length} productos — usando datos del catalogo`);
+
     const mergedItems = productsToSend.map((p, i) => {
-      const ci = claudeItems[i] || {};
+      const ci = aligned ? (claudeItems[i] || {}) : {};
       const sku = p.partNumber || p.model;
       const regularNum = parseFloat(p.regularPrice) || parseFloat(p.price) || 0;
       const offerNum   = parseFloat(p.price) || 0;
