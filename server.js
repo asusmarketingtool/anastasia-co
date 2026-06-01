@@ -33,6 +33,35 @@ let catalog = [];
 const conversations = {};
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// ── Memoria por sesion para Magento (GET /anastasia) ─────────────────
+// Igual que el objeto `conversations` de Freshchat, pero para la pagina
+// web. Vive en RAM (sin base de datos). Guarda los ultimos turnos y los
+// productos mostrados, para que AnastasIA entienda "mas barata que esas",
+// reconozca cuando el cliente elige un modelo, y no re-recomiende.
+const magentoSessions = {};
+const MAGENTO_HISTORY_TURNS = 6;          // cuantos turnos recordar
+const MAGENTO_SESSION_TTL_MS = 60 * 60 * 1000; // 1h sin actividad -> se borra
+
+function getSession(id) {
+  if (!id) return null;
+  const now = Date.now();
+  let s = magentoSessions[id];
+  if (!s || (now - s.lastSeen) > MAGENTO_SESSION_TTL_MS) {
+    s = { history: [], shownProducts: [], lastSeen: now };
+    magentoSessions[id] = s;
+  }
+  s.lastSeen = now;
+  return s;
+}
+
+// Limpieza periodica de sesiones viejas (evita que la RAM crezca infinito).
+setInterval(() => {
+  const now = Date.now();
+  for (const id in magentoSessions) {
+    if ((now - magentoSessions[id].lastSeen) > MAGENTO_SESSION_TTL_MS) delete magentoSessions[id];
+  }
+}, 10 * 60 * 1000);
+
 const rateLimitStore = {};
 function isRateLimited(ip) {
   const now = Date.now();
@@ -91,6 +120,9 @@ function isFollowUp(q) {
     // pago / financiación (info general)
     "formas de pago","medios de pago","puedo pagar","aceptan","cuotas","financiacion",
     "financiación","tarjeta de credito","tarjeta de crédito","addi","sistecredito",
+    "como es el checkout","checkout","como compro","cómo compro","como pago","cómo pago",
+    "proceso de compra","como finalizo","cómo finalizo","como hago la compra","carrito",
+    "factura","facturacion","facturación","datacredito","pse","contraentrega","contra entrega",
     // referencia a lo ya mostrado
     "cual me conviene","cuál me conviene","cual es mejor","cuál es mejor",
     "cual recomiendas","cuál recomiendas","de esas","de estas","de las que",
@@ -159,6 +191,11 @@ async function refreshCatalog() {
         "mousepad","mouse pad","gift","regalo","kit",
       ];
       if (accessoryWords.some(w => t.includes(w))) return false;
+
+      // Handhelds (ROG Ally / XBOX Ally) NO son laptops y no estan en stock.
+      // Cuestan >$1M asi que el piso de precio no los atrapa; se filtran aqui.
+      const handheldWords = ["ally","xbox ally","rog ally","steam deck","handheld"];
+      if (handheldWords.some(w => t.includes(w))) return false;
 
       // Piso de precio: ninguna laptop ASUS en COP baja de ~$1.000.000.
       // Accesorios (cases, mouse) estan muy por debajo -> se descartan.
@@ -303,7 +340,9 @@ app.get("/anastasia", async (req, res) => {
   const tStart = Date.now();
   const query = req.query.q || req.query.query || req.query.busqueda || "";
   const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
-  console.log(`🤖 AnastasIA CO consulta: "${query}"`);
+  const sessionId = req.query.session || req.query.session_id || "";
+  const session = getSession(sessionId); // null si no mandan session
+  console.log(`🤖 AnastasIA CO consulta: "${query}"${sessionId ? ` [${sessionId}]` : ""}`);
   if (!query) return res.json({ items: [] });
 
   // ── Guardrail 0: URL detector ────────────────────────────────────
@@ -430,29 +469,67 @@ app.get("/anastasia", async (req, res) => {
       });
     }
 
+    // ── Deteccion de "eligio un modelo que ya vio" ───────────────────
+    // Si el cliente escribe el nombre de una laptop que YA le mostramos,
+    // no es una busqueda nueva: esta eligiendo. Lo tratamos como follow-up
+    // para confirmar su eleccion en vez de re-recomendar.
+    let isModelPick = false;
+    if (session && session.shownProducts.length) {
+      const qNorm = q.replace(/[^a-z0-9]/g, "");
+      isModelPick = session.shownProducts.some(p => {
+        const model = (p.model || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const title = (p.title || "").toLowerCase();
+        // match por modelo (ej "fa506ncg") o por nombre comercial corto del titulo
+        if (model && model.length >= 4 && qNorm.includes(model)) return true;
+        // match por nombre tipo "tuf gaming a15" presente en el titulo
+        const qWords = q.split(/\s+/).filter(w => w.length > 2);
+        const hit = qWords.filter(w => title.includes(w)).length;
+        return qWords.length >= 2 && hit >= 2;
+      });
+    }
+
     // ── Follow-up / conversacional (responde sin re-recomendar) ──────
     // Va DESPUÉS de los redirects de asesor/servicio (para que escalen bien)
     // y ANTES de searchProducts (para cortar el camino del producto).
-    if (isFollowUp(q)) {
+    if (isFollowUp(q) || isModelPick) {
       const tFollow = Date.now();
+
+      // Contexto de memoria: que laptops ya vio el cliente, para que pueda
+      // responder "cual me conviene" / "la primera" refiriendose a modelos reales.
+      const shown = session?.shownProducts || [];
+      const shownList = shown.length
+        ? `\nLaptops que el cliente YA vio en esta conversacion (puedes referirte a ellas por nombre):\n${shown.map((p, i) => `${i+1}. ${p.title} — ${p.specs || ""}`).join("\n")}`
+        : "";
+
+      // Historial reciente para que la respuesta tenga continuidad.
+      const histMsgs = session?.history?.slice(-MAGENTO_HISTORY_TURNS) || [];
+
       const followResp = await anthropic.messages.create({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 250,
         system: `Eres AnastasIA, asesora de laptops ASUS Colombia. Entiendes colombianismos pero respondes amigable y profesional.
-El cliente ya vio recomendaciones de laptops y ahora hace una pregunta de seguimiento (envío, garantía, pago, o cuál elegir).
+El cliente ya vio recomendaciones de laptops y ahora hace una pregunta de seguimiento (envío, garantía, pago, o cuál elegir).${shownList}
 REGLAS:
 - Responde SOLO la pregunta, en 1-2 frases cortas, español colombiano natural.
-- NO recomiendes ni listes productos nuevos. NO inventes modelos.
+- NO listes tarjetas de producto nuevas. Si el cliente pregunta cual le conviene o elige una de las que vio, puedes mencionarla POR NOMBRE (de la lista de arriba) y dar un criterio breve, pero sin reabrir busqueda.
 - Si pregunta por envíos: en Colombia la entrega suele ser 2-3 días hábiles según ciudad.
 - Si pregunta por garantía: las laptops ASUS tienen garantía oficial; los detalles los confirma el asesor.
-- Si pregunta por pago/financiación: se manejan varios medios de pago en la tienda; el asesor da el detalle.
-- Si pregunta cuál le conviene de las que vio: da un criterio general (uso, presupuesto) sin listar productos.
+- Si pregunta por pago/financiación o checkout: se manejan varios medios de pago en la tienda; para finalizar la compra el cliente da clic en "Ver producto" y completa el checkout en la tienda. El asesor ayuda con el detalle.
+- Si elige un modelo: confirma su eleccion, felicitalo brevemente y dile que puede dar clic en "Ver producto" de esa laptop para comprarla. NO muestres otras.
 - Si es un agradecimiento o cierre: responde con cortesía breve y ofrece seguir ayudando.
 - Devuelve SOLO texto plano, sin JSON, sin markdown.`,
-        messages: [{ role: "user", content: query }],
+        messages: [...histMsgs, { role: "user", content: query }],
       });
       const followText = (followResp.content[0]?.text || "").trim();
       console.log(`💬 AnastasIA CO follow-up: ${Date.now() - tFollow}ms`);
+
+      // Guardar el turno en memoria.
+      if (session) {
+        session.history.push({ role: "user", content: query });
+        session.history.push({ role: "assistant", content: followText });
+        if (session.history.length > MAGENTO_HISTORY_TURNS * 2) session.history = session.history.slice(-MAGENTO_HISTORY_TURNS * 2);
+      }
+
       return res.json({ message: followText, items: [] });
     }
 
@@ -515,6 +592,13 @@ REGLAS:
     };
     const userMessage = intentMap[messageType];
 
+    // Contexto de memoria: si ya mostramos laptops antes, decirle a Claude
+    // cuales fueron para que el "message" no repita ni ignore lo anterior
+    // (ej. el cliente pidio "mas barata" -> Claude sabe respecto a que).
+    const priorContext = (session && session.shownProducts.length)
+      ? `\nCONTEXTO: antes en esta conversacion ya le mostramos estas laptops: ${session.shownProducts.map(p => p.title).join("; ")}. Las de ahora son una nueva seleccion segun lo que acaba de pedir; en el "message" no las repitas como si fueran nuevas marcas, conecta de forma natural con lo que pidio.`
+      : "";
+
     // ── Build product list — only what Claude needs ──────────────────
     const productList = productsToSend.map((p, i) => {
       const promo = calcPromo(p.regularPrice, p.price);
@@ -541,7 +625,7 @@ REGLAS:
 - Sin comillas dobles en ningun valor de texto.
 - Devuelve SOLO JSON valido sin markdown en el ORDEN exacto del catalogo:
 {"message":"texto","items":[{"title_display":"...","specs":"...","promo":"..."}]}`,
-      messages: [{ role: "user", content: userMessage }],
+      messages: [{ role: "user", content: userMessage + priorContext }],
     });
     console.log(`⏱️ Claude API: ${Date.now() - tClaude}ms`);
 
@@ -588,6 +672,17 @@ REGLAS:
     });
 
     console.log(`✅ AnastasIA CO devuelve ${mergedItems.length} productos · Total: ${Date.now() - tStart}ms`);
+
+    // ── Guardar en memoria: productos mostrados + turno de conversacion ──
+    if (session) {
+      session.shownProducts = mergedItems.map(it => ({
+        title: it.TITLE, model: (productsToSend.find(p => p.title === it.TITLE)?.model) || "", specs: it.SPECS,
+      }));
+      session.history.push({ role: "user", content: query });
+      session.history.push({ role: "assistant", content: (result.message || "") + " [mostre: " + mergedItems.map(i => i.TITLE).join(", ") + "]" });
+      if (session.history.length > MAGENTO_HISTORY_TURNS * 2) session.history = session.history.slice(-MAGENTO_HISTORY_TURNS * 2);
+    }
+
     return res.json({ message: result.message || "", items: mergedItems });
 
   } catch (err) {
