@@ -98,14 +98,20 @@ const offTopicWords = [
   "chiste","broma","cuento",
   "noticias","periodico","periódico","novedades del mundo",
 ];
-function isOffTopic(query) {
-  const q = ` ${query.toLowerCase()} `;
-  // Coincidencia por palabra completa: evita falsos positivos como
-  // "descuento" (contiene "cuento") o "deportivo" en otra palabra.
-  return offTopicWords.some(w => {
-    if (w.includes(" ")) return q.includes(w); // frases multi-palabra
-    return new RegExp(`(^|[^a-záéíóúñ])${w}([^a-záéíóúñ]|$)`, "i").test(q);
+// Coincidencia por PALABRA COMPLETA (no por fragmento). Evita falsos
+// positivos como "buenas" conteniendo "nas", o "descuento" conteniendo
+// "cuento". Frases con espacios se buscan tal cual.
+function hasWord(text, words) {
+  const q = ` ${text.toLowerCase()} `;
+  return words.some(w => {
+    w = w.toLowerCase();
+    if (w.includes(" ")) return q.includes(w);
+    return new RegExp(`(^|[^a-záéíóúñ0-9])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-záéíóúñ0-9]|$)`, "i").test(q);
   });
+}
+
+function isOffTopic(query) {
+  return hasWord(query, offTopicWords);
 }
 
 // ── Follow-up / conversacional (responde sin re-recomendar) ──────────
@@ -133,11 +139,16 @@ function isFollowUp(q) {
     "cual recomiendas","cuál recomiendas","de esas","de estas","de las que",
     "la primera","la segunda","la tercera","esa cual","cual de las",
     "diferencia entre","comparalas","compáralas","cual elijo","cuál elijo",
+    // preguntas de idoneidad sobre las que ya mostro (referencia con demostrativos)
+    "estas sirven","estas son buenas","estas son aptas","estas funcionan",
+    "estos sirven","estos son buenos","estas siguen","estos siguen",
+    "siguen siendo buenas","siguen siendo buenos","esas sirven","esas son buenas",
+    "estas valen","estas aguantan","estos aguantan","estas corren","estos corren",
     // cortesía / cierre
     "gracias","muchas gracias","listo","perfecto","de una","vale","entendido",
     "buenisimo","buenísimo","chevere","chévere","bacano",
   ];
-  return followUpWords.some(w => q.includes(w));
+  return hasWord(q, followUpWords);
 }
 
 function formatCOP(amount) {
@@ -403,7 +414,7 @@ app.get("/anastasia", async (req, res) => {
       "devolucion","devolución","cambio de producto","reclamo","queja",
       "asesor","asesores","agente humano","hablar con humano","hablar con persona","hablar con alguien","persona real",
     ];
-    if (salesWords.some(w => q.includes(w))) {
+    if (hasWord(q, salesWords)) {
       return res.json({
         message: "Para consultas sobre cupones, pedidos o promociones, uno de nuestros asesores de ventas te puede ayudar. Da clic abajo para hablar con un asesor.",
         escalate: true,
@@ -438,7 +449,7 @@ app.get("/anastasia", async (req, res) => {
     const mentionsBattery = /\b(bateria|batería|battery|pila)\b/.test(q);
     const batteryProblem = mentionsBattery && /(hinchada|no carga|no funciona|repuesto|reemplaz|rota|muerta|dañ|estallad|inflada)/.test(q);
     const batteryFeature = mentionsBattery && /(duracion|duración|autonomia|autonomía|horas|dura|larga|buena|precio|hasta|pesos|millones|busco|quiero|recomienda|presupuesto)/.test(q);
-    if (serviceWords.some(w => q.includes(w)) || (batteryProblem && !batteryFeature)) {
+    if (hasWord(q, serviceWords) || (batteryProblem && !batteryFeature)) {
       return res.json({
         message: "Esa consulta la maneja mejor nuestro equipo de soporte. Da clic abajo para hablar con un asesor y resolverla.",
         escalate: true,
@@ -469,7 +480,7 @@ app.get("/anastasia", async (req, res) => {
       "mouse","keyboard","teclado externo","audifonos","audífonos","headset","webcam","auriculares","auricular",
       "parlante","bocina","altavoz",
     ];
-    if (nonLaptopWords.some(w => q.includes(w)) || (q.includes("monitor") && !q.includes("laptop") && !q.includes("pantalla de laptop"))) {
+    if (hasWord(q, nonLaptopWords) || (q.includes("monitor") && !q.includes("laptop") && !q.includes("pantalla de laptop"))) {
       return res.json({
         message: "Por el momento solo contamos con laptops ASUS en nuestra tienda online en Colombia. ¿Te ayudo a encontrar la laptop perfecta para ti?",
         items: [{ TITLE: "Explora nuestras laptops ASUS", TITLE_DISPLAY: "Ver laptops disponibles", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Gaming · Trabajo · Universidad · Diseño", PROMO: "Encuentra tu laptop ideal hoy" }]
