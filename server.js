@@ -24,7 +24,7 @@ const CONFIG = {
   PORT: process.env.PORT || 3000,
   MAX_PRODUCTS_IN_PROMPT: 8,
   CONVERSATION_HISTORY: 6,
-  RATE_LIMIT_MAX: 10,
+  RATE_LIMIT_MAX: 40,
   RATE_LIMIT_WINDOW_MS: 60 * 60 * 1000,
   MAX_QUERY_LENGTH: 300,
 };
@@ -380,8 +380,9 @@ app.get("/anastasia", async (req, res) => {
   // ── Guardrail 2: Rate limiting ───────────────────────────────────
   if (isRateLimited(ip)) {
     return res.json({
-      message: "Has realizado demasiadas consultas en poco tiempo. Por favor espera unos minutos e intenta de nuevo.",
-      items: [{ TITLE: "Servicio al Cliente ASUS Colombia", TITLE_DISPLAY: "Contáctanos directamente", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/support/", IMAGEN: "https://www.asus.com/media/global/gallery/lVTlQHxDPCyHhWVU_setting_fff_1_90_end_1000.png", SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00", PROMO: "(601) 241 55 28" }]
+      message: "Has hecho varias consultas seguidas. Dame un momentico y vuelve a intentar — o si prefieres, habla directo con un asesor.",
+      escalate: true,
+      items: []
     });
   }
 
@@ -855,7 +856,8 @@ REGLAS (sin comillas dobles en ningun valor de texto):
         PROMO: calcPromo(p.regularPrice, p.price) || "Visita nuestra tienda ASUS Colombia",
       };
     });
-    return res.json({ items: fallback });
+    // error_flag avisa al frontend que esto fue un fallback (para trackear).
+    return res.json({ items: fallback, error_flag: true, error_msg: String(err.message || "").slice(0, 200) });
   }
 });
 
