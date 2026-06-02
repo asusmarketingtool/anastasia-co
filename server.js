@@ -487,6 +487,84 @@ app.get("/anastasia", async (req, res) => {
       });
     }
 
+    // ── Ficha tecnica completa de UN modelo ──────────────────────────
+    // Si el cliente pide "specs completos / ficha tecnica" de un modelo,
+    // devolvemos una tarjeta de ficha (specSheet) en vez de texto plano.
+    const wantsFullSpecs = hasWord(q, [
+      "specs completos","especificaciones completas","ficha tecnica","ficha técnica",
+      "todos los specs","todas las especificaciones","specs de","especificaciones de",
+      "caracteristicas completas","características completas","detalles tecnicos","detalles técnicos",
+      "ficha completa","specs completas",
+    ]);
+    if (wantsFullSpecs) {
+      // Resolver a que producto se refiere: primero entre los ya mostrados,
+      // si no, buscar en el catalogo.
+      let target = null;
+      const qNorm = q.replace(/[^a-z0-9]/g, "");
+      const pool = (session && session.shownProducts.length)
+        ? session.shownProducts.map(sp => catalog.find(c => c.title === sp.title)).filter(Boolean)
+        : [];
+      const candidates = pool.length ? pool : searchProducts(query);
+      target = candidates.find(p => {
+        const model = (p.model || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (model && model.length >= 4 && qNorm.includes(model)) return true;
+        const title = (p.title || "").toLowerCase();
+        const qWords = q.split(/\s+/).filter(w => w.length > 2);
+        return qWords.filter(w => title.includes(w)).length >= 2;
+      }) || candidates[0];
+
+      if (target) {
+        const tSheet = Date.now();
+        const promo = calcPromo(target.regularPrice, target.price);
+        const sheetResp = await anthropic.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 600,
+          system: `Eres AnastasIA, experta en laptops ASUS Colombia. Te doy UN producto y debes armar su ficha tecnica.
+PRODUCTO: ${target.title}
+DESCRIPCION: ${target.description.replace(/"/g, "'")}
+Modelo: ${target.model} | Precio: ${target.price}
+
+Devuelve SOLO JSON valido sin markdown:
+{"intro":"1 frase corta presentando la laptop","specs":[{"label":"Procesador","value":"..."},{"label":"Memoria RAM","value":"..."},{"label":"Almacenamiento","value":"..."},{"label":"Pantalla","value":"..."},{"label":"Tarjeta grafica","value":"..."},{"label":"Sistema operativo","value":"..."}],"porque":"parrafo de 2-3 frases en español colombiano explicando por que es buena opcion y para que usos brilla (gaming, AutoCAD, universidad, diseño). Natural y vendedor sin exagerar."}
+REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite ese objeto del array (no lo inventes). Incluye RAM ampliable si se menciona. Sin comillas dobles dentro de los valores.`,
+          messages: [{ role: "user", content: query }],
+        });
+        console.log(`📋 Ficha tecnica: ${Date.now() - tSheet}ms`);
+        let sheet;
+        try { sheet = JSON.parse(sheetResp.content[0].text.trim().replace(/```json|```/g, "").trim()); }
+        catch { sheet = null; }
+
+        if (sheet) {
+          const sku = target.partNumber || target.model;
+          const regularNum = parseFloat(target.regularPrice) || parseFloat(target.price) || 0;
+          const offerNum   = parseFloat(target.price) || 0;
+          // guardar turno en memoria
+          if (session) {
+            session.history.push({ role: "user", content: query });
+            session.history.push({ role: "assistant", content: `[ficha tecnica de ${target.title}]` });
+            if (session.history.length > MAGENTO_HISTORY_TURNS * 2) session.history = session.history.slice(-MAGENTO_HISTORY_TURNS * 2);
+          }
+          return res.json({
+            message: sheet.intro || `Esta es la ficha de ${target.title}:`,
+            specSheet: {
+              TITLE: target.title,
+              IMAGEN: target.image,
+              SPECS_LIST: Array.isArray(sheet.specs) ? sheet.specs : [],
+              PORQUE: sheet.porque || "",
+              PRECIO_OFERTA_FORMAT: formatCOP(offerNum),
+              PRECIO_REGULAR_FORMAT: formatCOP(regularNum),
+              PRECIO_REGULAR: regularNum,
+              PRECIO_OFERTA: offerNum,
+              PROMO: promo || "",
+              URL: addUTM(target.link, sku),
+            },
+            items: [],
+          });
+        }
+        // si fallo el JSON, cae al follow-up normal abajo
+      }
+    }
+
     // ── Deteccion de "eligio un modelo que ya vio" ───────────────────
     // Si el cliente escribe el nombre de una laptop que YA le mostramos,
     // no es una busqueda nueva: esta eligiendo. Lo tratamos como follow-up
@@ -643,11 +721,14 @@ REGLAS (sin comillas dobles en ningun valor de texto):
   - "ram": memoria. Ej: 16GB DDR5  o  32GB LPDDR5X
   - "ssd": almacenamiento. Ej: 1TB SSD  o  512GB SSD
   - "pantalla": tamaño/tipo. Ej: 16 FHD  o  14 OLED  o  15.6pulg
-  - Si algun dato no aparece en la descripcion, pon "" (vacio). NO inventes.
+  - "gpu": tarjeta grafica. Ej: RTX 5050  o  RTX 4060  o  Radeon integrada
+  - "teclado_espanol": si la descripcion menciona teclado en español/latinoamericano pon "Sí", si menciona retroiluminado puedes poner "Retroiluminado ES". Si NO se menciona, pon "".
+  - "en_caja": que incluye la caja si la descripcion lo dice (ej: Cargador y mouse). Si NO se menciona, pon "".
+  - REGLA CRITICA: si un dato NO aparece en la descripcion, pon "" (vacio). NUNCA inventes specs.
 - "ideal_para": para que tipo de uso brilla, 2-4 palabras. Ej: Gaming y AutoCAD  o  Universidad  o  Diseño y edicion  o  Trabajo diario.
 - "tagline": frase corta y vendedora con emoji, max 28 chars. Conecta con lo que pidio el cliente. Ej: ⚡ En oferta  o  🎮 Brutal para gaming  o  🎓 Perfecta para la u  o  💪 Potencia pura.
 - Devuelve SOLO JSON valido sin markdown, en el ORDEN exacto del catalogo:
-{"message":"texto","items":[{"title_display":"...","cpu":"...","ram":"...","ssd":"...","pantalla":"...","ideal_para":"...","tagline":"..."}]}`,
+{"message":"texto","items":[{"title_display":"...","cpu":"...","ram":"...","ssd":"...","pantalla":"...","gpu":"...","teclado_espanol":"...","en_caja":"...","ideal_para":"...","tagline":"..."}]}`,
       messages: [{ role: "user", content: userMessage + priorContext }],
     });
     console.log(`⏱️ Claude API: ${Date.now() - tClaude}ms`);
@@ -698,6 +779,9 @@ REGLAS (sin comillas dobles en ningun valor de texto):
         RAM:                  clean(ci.ram),
         SSD:                  clean(ci.ssd),
         PANTALLA:             clean(ci.pantalla),
+        GPU:                  clean(ci.gpu),
+        TECLADO_ES:           clean(ci.teclado_espanol),
+        EN_CAJA:              clean(ci.en_caja),
         IDEAL_PARA:           clean(ci.ideal_para),
         TAGLINE:              clean(ci.tagline) || calcPromo(p.regularPrice, p.price) || "",
         PROMO:                clean(ci.tagline) || calcPromo(p.regularPrice, p.price) || formatCOP(offerNum),
