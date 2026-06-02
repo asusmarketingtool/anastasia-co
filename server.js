@@ -624,25 +624,30 @@ REGLAS:
       return `${i+1}. ${p.title} | Precio oferta: ${p.price} | Precio regular: ${p.regularPrice} | Modelo: ${p.model} | Descripcion: ${p.description.replace(/"/g, "'")} | ${promoHint}`;
     }).join("\n");
 
-    // ── Claude call — max_tokens 800 (merge pattern) ─────────────────
+    // ── Claude call — JSON enriquecido por item ──────────────────────
     const tClaude = Date.now();
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 800,
+      max_tokens: 1100,
       system: `Eres AnastasIA, experta en laptops ASUS para clientes colombianos.
 Entiende colombianismos (berraca, parce, plata, billete, la u, pega, etc.) pero responde amigable y profesional.
 
 CATALOGO (numerado por posicion):
 ${productList}
 
-REGLAS:
+REGLAS (sin comillas dobles en ningun valor de texto):
 - "message": frase corta y natural en español colombiano. NUNCA copies el texto del cliente. NUNCA menciones otras marcas.
 - "title_display": nombre corto del producto, max 40 caracteres.
-- "specs": procesador | RAM | GPU | almacenamiento | pantalla. Sin comillas dobles. Max 90 chars. Ej: Ryzen 5 7535HS | 16GB DDR5 | RTX 3050 | 512GB SSD | 15pulg
-- "promo": si PROMO_CALCULADO no es none, usalo y agrega tagline corto con emoji (max 20 chars). Si es none, escribe precio en COP + emoji + frase corta (max 40 chars). Total max 60 chars.
-- Sin comillas dobles en ningun valor de texto.
-- Devuelve SOLO JSON valido sin markdown en el ORDEN exacto del catalogo:
-{"message":"texto","items":[{"title_display":"...","specs":"...","promo":"..."}]}`,
+- Specs clave extraidas de la descripcion (cada una corta, sin la etiqueta):
+  - "cpu": procesador. Ej: Ryzen 7 260  o  Core Ultra 7 258V
+  - "ram": memoria. Ej: 16GB DDR5  o  32GB LPDDR5X
+  - "ssd": almacenamiento. Ej: 1TB SSD  o  512GB SSD
+  - "pantalla": tamaño/tipo. Ej: 16 FHD  o  14 OLED  o  15.6pulg
+  - Si algun dato no aparece en la descripcion, pon "" (vacio). NO inventes.
+- "ideal_para": para que tipo de uso brilla, 2-4 palabras. Ej: Gaming y AutoCAD  o  Universidad  o  Diseño y edicion  o  Trabajo diario.
+- "tagline": frase corta y vendedora con emoji, max 28 chars. Conecta con lo que pidio el cliente. Ej: ⚡ En oferta  o  🎮 Brutal para gaming  o  🎓 Perfecta para la u  o  💪 Potencia pura.
+- Devuelve SOLO JSON valido sin markdown, en el ORDEN exacto del catalogo:
+{"message":"texto","items":[{"title_display":"...","cpu":"...","ram":"...","ssd":"...","pantalla":"...","ideal_para":"...","tagline":"..."}]}`,
       messages: [{ role: "user", content: userMessage + priorContext }],
     });
     console.log(`⏱️ Claude API: ${Date.now() - tClaude}ms`);
@@ -675,6 +680,10 @@ REGLAS:
       const sku = p.partNumber || p.model;
       const regularNum = parseFloat(p.regularPrice) || parseFloat(p.price) || 0;
       const offerNum   = parseFloat(p.price) || 0;
+      const clean = (s) => (s ? String(s).replace(/"/g, "'").trim() : "");
+      // SPECS unificado (compat con cualquier render viejo) a partir de los campos.
+      const specsJoined = [ci.cpu, ci.ram, ci.ssd, ci.pantalla].filter(Boolean).join(" | ")
+        || p.description.slice(0, 90);
       return {
         TITLE:                p.title,
         TITLE_DISPLAY:        (ci.title_display || p.title).slice(0, 50),
@@ -684,8 +693,14 @@ REGLAS:
         PRECIO_OFERTA:         offerNum,
         URL:                  addUTM(p.link, sku),
         IMAGEN:               p.image,
-        SPECS:                (ci.specs || p.description.slice(0, 90)).replace(/"/g, "'"),
-        PROMO:                ci.promo || calcPromo(p.regularPrice, p.price) || formatCOP(offerNum),
+        SPECS:                clean(specsJoined),
+        CPU:                  clean(ci.cpu),
+        RAM:                  clean(ci.ram),
+        SSD:                  clean(ci.ssd),
+        PANTALLA:             clean(ci.pantalla),
+        IDEAL_PARA:           clean(ci.ideal_para),
+        TAGLINE:              clean(ci.tagline) || calcPromo(p.regularPrice, p.price) || "",
+        PROMO:                clean(ci.tagline) || calcPromo(p.regularPrice, p.price) || formatCOP(offerNum),
       };
     });
 
