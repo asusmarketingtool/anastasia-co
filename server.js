@@ -505,13 +505,27 @@ app.get("/anastasia", async (req, res) => {
         ? session.shownProducts.map(sp => catalog.find(c => c.title === sp.title)).filter(Boolean)
         : [];
       const candidates = pool.length ? pool : searchProducts(query);
-      target = candidates.find(p => {
+      // Puntuar TODOS los candidatos y quedarnos con el mejor (no el primero
+      // que pase el umbral), para que "a15" gane sobre "a16" si pedis la a15.
+      const scoreOf = (p) => {
         const model = (p.model || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-        if (model && model.length >= 4 && qNorm.includes(model)) return true;
         const title = (p.title || "").toLowerCase();
         const qWords = q.split(/\s+/).filter(w => w.length > 2);
-        return qWords.filter(w => title.includes(w)).length >= 2;
-      }) || candidates[0];
+        let sc = qWords.filter(w => title.includes(w.replace(/[?¿!¡.,]/g, ""))).length;
+        if (model && model.length >= 4 && qNorm.includes(model)) sc += 5; // match por part-number = fuerte
+        return sc;
+      };
+      let best = null, bestScore = 0;
+      for (const p of candidates) {
+        const sc = scoreOf(p);
+        if (sc > bestScore) { bestScore = sc; best = p; }
+      }
+      target = (bestScore >= 2) ? best : null;
+      // "specs de esta/esta laptop" sin nombre claro -> usar la ultima mostrada
+      if (!target) {
+        if (/\b(esta|este|esa|ese|la misma|el mismo)\b/.test(q) && pool.length) target = pool[pool.length - 1];
+        else target = candidates[0];
+      }
 
       if (target) {
         const tSheet = Date.now();
@@ -531,8 +545,32 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
         });
         console.log(`📋 Ficha tecnica: ${Date.now() - tSheet}ms`);
         let sheet;
-        try { sheet = JSON.parse(sheetResp.content[0].text.trim().replace(/```json|```/g, "").trim()); }
-        catch { sheet = null; }
+        try {
+          let rawSheet = sheetResp.content[0].text.trim().replace(/```json|```/g, "").trim();
+          sheet = JSON.parse(rawSheet);
+        } catch {
+          // Fallback: armar la ficha desde la descripcion del catalogo,
+          // para NO caer al texto plano. Siempre sale la tarjeta.
+          const d = target.description;
+          const pick = (re) => { const m = d.match(re); return m ? m[0].trim() : ""; };
+          const specs = [];
+          const cpu = pick(/(amd\s+)?ryzen[\s\w]*?\d+\w*|core\s+(ultra\s+)?[i]?\d[\s\w-]*?\d*\w*|intel\s+core[\s\w-]*?\d+\w*/i);
+          const ram = pick(/\d{1,3}\s?gb\s+(ddr\d|lpddr\d\w*)/i);
+          const ssd = pick(/\d+\s?(gb|tb)\s+ssd/i);
+          const pan = pick(/\d{2}(\.\d)?\s?(pulg|"|oled|fhd|wuxga|qhd)\w*/i);
+          const gpu = pick(/(rtx|gtx)\s?\d{3,4}\s?(ti)?\s?(\d+gb)?|radeon[\s\w]*|arc[\s\w]*/i);
+          if (cpu) specs.push({ label: "Procesador", value: cpu });
+          if (ram) specs.push({ label: "Memoria RAM", value: ram });
+          if (ssd) specs.push({ label: "Almacenamiento", value: ssd });
+          if (pan) specs.push({ label: "Pantalla", value: pan });
+          if (gpu) specs.push({ label: "Tarjeta grafica", value: gpu });
+          sheet = {
+            intro: `Esta es la ficha de la ${target.title}:`,
+            specs,
+            porque: "Una opcion solida de ASUS. Para mas detalles tecnicos da clic en Ver producto y revisa la ficha completa en la tienda.",
+          };
+          console.log(`⚠️ Ficha: JSON fallo, armada desde catalogo (${specs.length} specs)`);
+        }
 
         if (sheet) {
           const sku = target.partNumber || target.model;
