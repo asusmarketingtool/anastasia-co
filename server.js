@@ -99,8 +99,13 @@ const offTopicWords = [
   "noticias","periodico","periódico","novedades del mundo",
 ];
 function isOffTopic(query) {
-  const q = query.toLowerCase();
-  return offTopicWords.some(w => q.includes(w));
+  const q = ` ${query.toLowerCase()} `;
+  // Coincidencia por palabra completa: evita falsos positivos como
+  // "descuento" (contiene "cuento") o "deportivo" en otra palabra.
+  return offTopicWords.some(w => {
+    if (w.includes(" ")) return q.includes(w); // frases multi-palabra
+    return new RegExp(`(^|[^a-záéíóúñ])${w}([^a-záéíóúñ]|$)`, "i").test(q);
+  });
 }
 
 // ── Follow-up / conversacional (responde sin re-recomendar) ──────────
@@ -400,8 +405,9 @@ app.get("/anastasia", async (req, res) => {
     ];
     if (salesWords.some(w => q.includes(w))) {
       return res.json({
-        message: "Para consultas sobre cupones, pedidos o promociones, nuestros asesores de ventas pueden ayudarte. Reinicia el chat y selecciona 'Hablar con un asesor', o escríbenos a soporteventas.co@asus.com",
-        items: [{ TITLE: "Asesores de Ventas ASUS Colombia", TITLE_DISPLAY: "Contactar asesor de ventas", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00", PROMO: "soporteventas.co@asus.com" }]
+        message: "Para consultas sobre cupones, pedidos o promociones, uno de nuestros asesores de ventas te puede ayudar. Da clic abajo para hablar con un asesor.",
+        escalate: true,
+        items: []
       });
     }
 
@@ -434,8 +440,9 @@ app.get("/anastasia", async (req, res) => {
     const batteryFeature = mentionsBattery && /(duracion|duración|autonomia|autonomía|horas|dura|larga|buena|precio|hasta|pesos|millones|busco|quiero|recomienda|presupuesto)/.test(q);
     if (serviceWords.some(w => q.includes(w)) || (batteryProblem && !batteryFeature)) {
       return res.json({
-        message: "Lo sentimos, este producto o servicio no está disponible en nuestra tienda online ASUS Colombia. Para más información contacta a nuestro equipo de soporte técnico:",
-        items: [{ TITLE: "Servicio al Cliente ASUS Colombia", TITLE_DISPLAY: "Contáctanos para ayudarte", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/support/", IMAGEN: "https://www.asus.com/media/global/gallery/lVTlQHxDPCyHhWVU_setting_fff_1_90_end_1000.png", SPECS: "Lunes-Viernes 07:30-18:00 · Sábado 08:00-13:00", PROMO: "(601) 241 55 28" }]
+        message: "Esa consulta la maneja mejor nuestro equipo de soporte. Da clic abajo para hablar con un asesor y resolverla.",
+        escalate: true,
+        items: []
       });
     }
 
