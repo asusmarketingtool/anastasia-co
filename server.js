@@ -249,6 +249,21 @@ const SINONIMOS = {
   handheld:      ["ally","handheld","consola","portatil","portable","xbox","gamepass","game pass","steam","steam deck","mini consola","joystick","control"],
 };
 
+// Extrae un techo de presupuesto en COP desde frases como "4 millones",
+// "de 4 palos", "menos de 3.500.000", "hasta 5 millones". Devuelve null si no hay.
+function extractBudget(q) {
+  // "4 millones" / "4 palos" / "4 lucas" (millones)
+  let m = q.match(/(\d+(?:[.,]\d+)?)\s*(millones|millon|palos|palo|lucas|luca|m\b)/i);
+  if (m) return Math.round(parseFloat(m[1].replace(",", ".")) * 1000000);
+  // numero grande con separadores: 3.500.000 / 3500000 / 3,500,000
+  m = q.match(/(\d[\d.,]{5,})/);
+  if (m) {
+    const n = parseInt(m[1].replace(/[.,]/g, ""), 10);
+    if (n >= 500000) return n;
+  }
+  return null;
+}
+
 function searchProducts(query) {
   const q = query.toLowerCase();
   const words = q.split(/\s+/).filter(w => w.length > 1);
@@ -264,7 +279,30 @@ function searchProducts(query) {
     words.forEach(w => { if (text.includes(w)) score += 5; });
     return { product, score };
   });
-  const results = scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score).slice(0, CONFIG.MAX_PRODUCTS_IN_PROMPT).map(s => s.product);
+  let results = scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score).slice(0, CONFIG.MAX_PRODUCTS_IN_PROMPT).map(s => s.product);
+
+  // ── Filtro por PRESUPUESTO: si el cliente dio un monto, descarta lo que se pase ──
+  const budget = extractBudget(q);
+  if (budget) {
+    const within = catalog.filter(p => {
+      const price = parseFloat(p.price) || 0;
+      return price > 0 && price <= budget;
+    });
+    if (within.length > 0) {
+      // dentro del presupuesto, prioriza relevancia (gaming/uso) y luego precio
+      const wantsGaming = SINONIMOS.gaming.some(g => q.includes(g));
+      const ranked = within.map(p => {
+        const t = `${p.title} ${p.description} ${p.category}`.toLowerCase();
+        let s = allWords.reduce((a, w) => a + (t.includes(w) ? 1 : 0), 0);
+        if (wantsGaming && /gaming|tuf|rog|strix|rtx|gtx/.test(t)) s += 10; // prioriza gaming real
+        return { p, s, price: parseFloat(p.price) || 0 };
+      }).sort((a, b) => b.s - a.s || a.price - b.price);
+      return ranked.map(r => r.p).slice(0, CONFIG.MAX_PRODUCTS_IN_PROMPT);
+    }
+    // nada cabe en el presupuesto -> devolvemos vacio para que el server avise honestamente
+    return [];
+  }
+
   const budgetWords = ["barata","barato","económico","economico","precio","accesible","presupuesto","pesos","bajos","low","cheap","plata","billete"];
   if (budgetWords.some(w => q.includes(w)) && results.length > 0) {
     return results.sort((a, b) => (parseFloat(a.price) || 999999) - (parseFloat(b.price) || 999999));
@@ -674,8 +712,63 @@ REGLAS:
     }
 
     // ── Search products ──────────────────────────────────────────────
-    const relevant = searchProducts(query);
-    if (relevant.length === 0) return res.json({ items: [] });
+    // Si el mensaje es casi solo un presupuesto ("5 millones", "algo de 4 palos")
+    // sin tipo de uso, le anexamos el contexto previo (ej: gaming) para que la
+    // busqueda no pierda el hilo de lo que el cliente venia buscando.
+    let searchQuery = query;
+    const hasUseType = /(gaming|gamer|jugar|juego|fortnite|trabajo|oficina|universidad|estudio|diseño|diseno|autocad|edicion|edición|programar)/i.test(query);
+    const budgetOnly = extractBudget(query.toLowerCase()) && !hasUseType;
+    if (budgetOnly && session && session.history.length) {
+      const lastUser = [...session.history].reverse().find(h => h.role === "user" && /(gaming|gamer|jugar|juego|fortnite|trabajo|oficina|universidad|estudio|diseño|diseno|autocad|edicion|programar)/i.test(h.content));
+      if (lastUser) {
+        const useMatch = lastUser.content.match(/(gaming|gamer|jugar|juego|fortnite|trabajo|oficina|universidad|estudio|diseño|diseno|autocad|edicion|programar)/i);
+        if (useMatch) searchQuery = `${query} ${useMatch[0]}`;
+      }
+    }
+    const relevant = searchProducts(searchQuery);
+    if (relevant.length === 0) {
+      // Nada cabe: dejamos que Claude redacte el mensaje (natural y en tono de
+      // AnastasIA) en vez de un texto fijo. Le pasamos el presupuesto pedido y
+      // el precio mas bajo disponible para que oriente al cliente.
+      const budget = extractBudget(query.toLowerCase());
+      const cheapest = catalog.reduce((min, p) => {
+        const pr = parseFloat(p.price) || 0;
+        return (pr > 0 && pr < min) ? pr : min;
+      }, Infinity);
+      const cheapestTxt = cheapest !== Infinity ? formatCOP(cheapest) : "";
+      const noStockPrompt =
+        `Eres AnastasIA, asesora de laptops ASUS Colombia. Hablas natural y amigable, con toques colombianos sin exagerar.
+El cliente pidio: "${query}".
+SITUACION: en la tienda NO hay ninguna laptop que encaje con ese pedido${budget ? ` (su presupuesto es ${formatCOP(budget)})` : ""}.${cheapestTxt ? ` La laptop mas economica disponible cuesta ${cheapestTxt}.` : ""}
+Escribe un mensaje corto (2-3 frases) que:
+- Diga con honestidad y sin drama que ahorita no tenemos algo en ese rango/criterio.
+- ${budget && cheapestTxt ? `Mencione que las opciones arrancan alrededor de ${cheapestTxt}, por si puede ajustar.` : "Pida un poco mas de detalle (uso o presupuesto) para ayudarle mejor."}
+- Pregunte hasta cuanto podria estirar el presupuesto o que ajuste busca.
+- NUNCA inventes productos ni precios distintos a los que te di. Solo texto, sin listas.`;
+      let msg;
+      try {
+        const r = await anthropic.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 180,
+          system: noStockPrompt,
+          messages: [{ role: "user", content: query }],
+        });
+        msg = (r.content[0]?.text || "").trim();
+      } catch {
+        msg = ""; // si Claude falla, abajo hay respaldo
+      }
+      // Respaldo minimo solo si Claude no devolvio nada (no debe pasar seguido).
+      if (!msg) {
+        msg = budget
+          ? `Parce, ahorita no tengo laptops en ese presupuesto${cheapestTxt ? `; las opciones arrancan alrededor de ${cheapestTxt}` : ""}. ¿Hasta cuánto podrías estirar?`
+          : "Parce, cuéntame un poco más (uso y presupuesto) y te busco la mejor opción.";
+      }
+      if (session) {
+        session.history.push({ role: "user", content: query });
+        session.history.push({ role: "assistant", content: msg });
+      }
+      return res.json({ message: msg, items: [] });
+    }
 
     const budgetWords = ["barata","barato","económico","economico","economica","económica","cheap","precio bajo","más barata","mas barata","menor precio","más económica","mas economica","low cost","accesible","pesos","plata","billete"];
     const powerWords  = ["potente","poderosa","poderoso","mejor","top","gama alta","más potente","mas potente","la mejor","lo mejor","high end","berraca","berracas"];
@@ -732,6 +825,15 @@ REGLAS:
     };
     const userMessage = intentMap[messageType];
 
+    // Si el cliente queria GAMING pero lo que cabe en su presupuesto NO es gaming,
+    // avisamos a Claude para que lo aclare con honestidad (no venda Vivobook como gaming).
+    const wantedGaming = /(gaming|gamer|jugar|juego|fortnite|valorant|lol)/i.test(searchQuery);
+    const sentGaming = productsToSend.some(p => /gaming|tuf|rog|strix|rtx|gtx/i.test(`${p.title} ${p.description}`));
+    const gamingNote = (wantedGaming && !sentGaming)
+      ? ` IMPORTANTE: el cliente quiere una laptop para gaming, pero las que caben en su presupuesto NO son gaming (son para trabajo/estudio). Acláralo con honestidad: dile que en ese rango de precio no hay laptops gaming disponibles, que estas sirven para tareas del diario pero no para juegos exigentes, y pregúntale si puede ajustar el presupuesto para una gaming real. NO las presentes como aptas para gaming.`
+      : "";
+    const userMessageFinal = userMessage + gamingNote;
+
     // Contexto de memoria: si ya mostramos laptops antes, decirle a Claude
     // cuales fueron para que el "message" no repita ni ignore lo anterior
     // (ej. el cliente pidio "mas barata" -> Claude sabe respecto a que).
@@ -774,7 +876,7 @@ REGLAS (sin comillas dobles en ningun valor de texto):
 - "tagline": frase corta y vendedora SIN emojis, max 28 chars. Conecta con lo que pidio el cliente. Ej: En oferta  o  Brutal para gaming  o  Perfecta para la u  o  Potencia pura.
 - Devuelve SOLO JSON valido sin markdown, en el ORDEN exacto del catalogo:
 {"message":"texto","items":[{"title_display":"...","cpu":"...","ram":"...","ssd":"...","pantalla":"...","gpu":"...","teclado_espanol":"...","en_caja":"...","ideal_para":"...","tagline":"..."}]}`,
-      messages: [{ role: "user", content: userMessage + priorContext }],
+      messages: [{ role: "user", content: userMessageFinal + priorContext }],
     });
     console.log(`⏱️ Claude API: ${Date.now() - tClaude}ms`);
 
