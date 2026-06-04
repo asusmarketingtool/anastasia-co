@@ -144,6 +144,10 @@ function isFollowUp(q) {
     "estos sirven","estos son buenos","estas siguen","estos siguen",
     "siguen siendo buenas","siguen siendo buenos","esas sirven","esas son buenas",
     "estas valen","estas aguantan","estos aguantan","estas corren","estos corren",
+    // reclamo de spec faltante (responder con honestidad, no re-buscar)
+    "pero no tiene","pero ninguna tiene","no tienen","ninguna tiene","ninguno tiene",
+    "no tiene i9","no tiene i7","queria i9","quería i9","esa no tiene","ese no tiene",
+    "pero queria","pero quería","no es lo que pedi","no es lo que pedí",
     // cortesía / cierre
     "gracias","muchas gracias","listo","perfecto","de una","vale","entendido",
     "buenisimo","buenísimo","chevere","chévere","bacano",
@@ -162,7 +166,7 @@ function addUTM(url, partNumber) {
 
 async function refreshCatalog() {
   try {
-    console.log("🔄 Actualizando catálogo CO...");
+    console.log("Actualizando catálogo CO...");
     const res = await fetch(CONFIG.FEED_URL);
     const xml = await res.text();
     const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_", parseTagValue: true });
@@ -288,7 +292,7 @@ function calcPromo(regularPrice, price) {
   const offer = parseFloat(price) || 0;
   const hasDiscount = regular > 0 && offer > 0 && regular > offer;
   if (!hasDiscount) return null;
-  return `${formatCOP(regular)} → ${formatCOP(offer)} ⚡ ¡Oferta!`;
+  return `${formatCOP(regular)} → ${formatCOP(offer)} ¡Oferta!`;
 }
 
 async function askClaude(conversationId, userMessage) {
@@ -335,9 +339,9 @@ app.post("/webhook/freshchat", async (req, res) => {
     if (!conversationId) return;
     const userMessage = event.messages.map(m => m.message_parts?.map(p => p.text?.content).filter(Boolean).join(" ")).filter(Boolean).join(" ").trim();
     if (!userMessage) return;
-    console.log(`💬 [${conversationId}] Usuario: ${userMessage}`);
+    console.log(`[${conversationId}] Usuario: ${userMessage}`);
     const reply = await askClaude(conversationId, userMessage);
-    console.log(`🤖 [${conversationId}] Claude: ${reply.slice(0, 80)}...`);
+    console.log(`[${conversationId}] Claude: ${reply.slice(0, 80)}...`);
     await replyOnFreshchat(conversationId, agentId, reply);
   } catch (err) {
     console.error("❌ Error procesando webhook:", err.message);
@@ -358,7 +362,7 @@ app.get("/anastasia", async (req, res) => {
   const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
   const sessionId = req.query.session || req.query.session_id || "";
   const session = getSession(sessionId); // null si no mandan session
-  console.log(`🤖 AnastasIA CO consulta: "${query}"${sessionId ? ` [${sessionId}]` : ""}`);
+  console.log(`AnastasIA CO consulta: "${query}"${sessionId ? ` [${sessionId}]` : ""}`);
   if (!query) return res.json({ items: [] });
 
   // ── Guardrail 0: URL detector ────────────────────────────────────
@@ -544,7 +548,7 @@ Devuelve SOLO JSON valido sin markdown:
 REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite ese objeto del array (no lo inventes). Incluye RAM ampliable si se menciona. Sin comillas dobles dentro de los valores.`,
           messages: [{ role: "user", content: query }],
         });
-        console.log(`📋 Ficha tecnica: ${Date.now() - tSheet}ms`);
+        console.log(`Ficha tecnica: ${Date.now() - tSheet}ms`);
         let sheet;
         try {
           let rawSheet = sheetResp.content[0].text.trim().replace(/```json|```/g, "").trim();
@@ -652,11 +656,12 @@ REGLAS:
 - Si pregunta por pago/financiación o checkout: se manejan varios medios de pago en la tienda; para finalizar la compra el cliente da clic en "Ver producto" y completa el checkout en la tienda. El asesor ayuda con el detalle.
 - Si elige un modelo: confirma su eleccion, felicitalo brevemente y dile que puede dar clic en "Ver producto" de esa laptop para comprarla. NO muestres otras.
 - Si es un agradecimiento o cierre: responde con cortesía breve y ofrece seguir ayudando.
+- Si el cliente reclama que falta un spec que pidio (ej: "pero no tiene i9", "ninguna tiene 32GB"): reconoce con honestidad que ahora mismo no hay en la tienda exactamente ese spec, y explica brevemente por que las que le mostraste igual le sirven (ej: "Cierto, justo ahora no tenemos i9 disponible, pero el Ryzen 7 de la TUF rinde parejito para gaming"). NUNCA digas que una laptop tiene un spec que no tiene.
 - Devuelve SOLO texto plano, sin JSON, sin markdown.`,
         messages: [...histMsgs, { role: "user", content: query }],
       });
       const followText = (followResp.content[0]?.text || "").trim();
-      console.log(`💬 AnastasIA CO follow-up: ${Date.now() - tFollow}ms`);
+      console.log(`AnastasIA CO follow-up: ${Date.now() - tFollow}ms`);
 
       // Guardar el turno en memoria.
       if (session) {
@@ -754,6 +759,7 @@ ${productList}
 
 REGLAS (sin comillas dobles en ningun valor de texto):
 - "message": frase corta y natural en español colombiano. NUNCA copies el texto del cliente. NUNCA menciones otras marcas.
+  - HONESTIDAD: si el cliente pidio algo especifico (ej: procesador i9, 32GB de RAM, una GPU puntual, una pulgada exacta) y NINGUN producto del catalogo lo cumple, NO finjas que si. Reconoce con naturalidad que ahora mismo no tienes exactamente eso en la tienda y ofrece la alternativa mas cercana explicando por que sirve. Ej: "Parce, justo ahora no tenemos laptops con i9 en la tienda, pero estas con Ryzen 7 y RTX rinden igual de duro para gaming". Sé honesto pero positivo, nunca inventes que un producto tiene un spec que no tiene.
 - "title_display": nombre corto del producto, max 40 caracteres.
 - Specs clave extraidas de la descripcion (cada una corta, sin la etiqueta):
   - "cpu": procesador. Ej: Ryzen 7 260  o  Core Ultra 7 258V
@@ -765,7 +771,7 @@ REGLAS (sin comillas dobles en ningun valor de texto):
   - "en_caja": que incluye la caja si la descripcion lo dice (ej: Cargador y mouse). Si NO se menciona, pon "".
   - REGLA CRITICA: si un dato NO aparece en la descripcion, pon "" (vacio). NUNCA inventes specs.
 - "ideal_para": para que tipo de uso brilla, 2-4 palabras. Ej: Gaming y AutoCAD  o  Universidad  o  Diseño y edicion  o  Trabajo diario.
-- "tagline": frase corta y vendedora con emoji, max 28 chars. Conecta con lo que pidio el cliente. Ej: ⚡ En oferta  o  🎮 Brutal para gaming  o  🎓 Perfecta para la u  o  💪 Potencia pura.
+- "tagline": frase corta y vendedora SIN emojis, max 28 chars. Conecta con lo que pidio el cliente. Ej: En oferta  o  Brutal para gaming  o  Perfecta para la u  o  Potencia pura.
 - Devuelve SOLO JSON valido sin markdown, en el ORDEN exacto del catalogo:
 {"message":"texto","items":[{"title_display":"...","cpu":"...","ram":"...","ssd":"...","pantalla":"...","gpu":"...","teclado_espanol":"...","en_caja":"...","ideal_para":"...","tagline":"..."}]}`,
       messages: [{ role: "user", content: userMessage + priorContext }],
@@ -868,10 +874,10 @@ setInterval(refreshCatalog, CONFIG.FEED_REFRESH_MS);
 setInterval(async () => {
   try {
     await fetch(`http://localhost:${CONFIG.PORT}/health`);
-    console.log("💓 Keep-alive CO");
+    console.log("Keep-alive CO");
   } catch (e) {}
 }, 5 * 60 * 1000);
 
 app.listen(CONFIG.PORT, () => {
-  console.log(`🚀 AnastasIA CO corriendo en puerto ${CONFIG.PORT}`);
+  console.log(`AnastasIA CO corriendo en puerto ${CONFIG.PORT}`);
 });
