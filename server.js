@@ -152,6 +152,11 @@ function isFollowUp(q) {
     "no es para gaming","no es para juegos","no sirve para gaming","no sirve para juegos",
     "no son para gaming","no son gaming","no es gaming","esa no es para","ese no es para",
     "no sirve para","no sirven para","no es buena para","no son buenas para","no es apta",
+    // preguntas de idoneidad (¿es buena para X? / la que me recomendaste)
+    "es buena para","es buen para","son buenas para","sirve para","sirven para","es apta para",
+    "es para gaming","es buena para gaming","sirve para gaming","aguanta gaming","corre",
+    "me recomendaste","que recomendaste","recomendaste","la que me mostraste","esa que",
+    "es buena la","es buena esa","como es la","que tal la","funciona para",
     // cortesía / cierre
     "gracias","muchas gracias","listo","perfecto","de una","vale","entendido",
     "buenisimo","buenísimo","chevere","chévere","bacano",
@@ -268,8 +273,20 @@ function extractBudget(q) {
   return null;
 }
 
-function searchProducts(query) {
+// Una laptop es "gaming" solo si tiene GPU dedicada NVIDIA o es linea gaming.
+// Radeon integrada / Intel Graphics / Arc / Adreno = NO gaming.
+function isGamingProduct(p) {
+  const t = `${p.title} ${p.description} ${p.category}`.toLowerCase();
+  if (/integrad|intel graphics|intel hd|adreno|radeon graphics|radeon integrada/.test(t)) {
+    // graficos integrados: solo es gaming si ademas menciona RTX/GTX dedicada
+    return /\brtx\s*\d{3,4}|\bgtx\s*\d{3,4}/.test(t);
+  }
+  return /gaming|\btuf\b|\brog\b|strix|\brtx\b|\bgtx\b|nitro/.test(t);
+}
+
+function searchProducts(query, wantsGamingCtx) {
   const q = query.toLowerCase();
+  const wantsGaming = wantsGamingCtx || SINONIMOS.gaming.some(g => q.includes(g));
   const words = q.split(/\s+/).filter(w => w.length > 1);
   const expanded = new Set(words);
   for (const [_cat, syns] of Object.entries(SINONIMOS)) {
@@ -288,23 +305,42 @@ function searchProducts(query) {
   // ── Filtro por PRESUPUESTO: si el cliente dio un monto, descarta lo que se pase ──
   const budget = extractBudget(q);
   if (budget) {
-    const within = catalog.filter(p => {
+    let within = catalog.filter(p => {
       const price = parseFloat(p.price) || 0;
       return price > 0 && price <= budget;
     });
+    // Si el contexto es gaming, EXCLUIR las no-gaming (no solo priorizar).
+    if (wantsGaming) {
+      const onlyGaming = within.filter(isGamingProduct);
+      within = onlyGaming; // si queda vacio, el server avisa honestamente
+    }
     if (within.length > 0) {
-      // dentro del presupuesto, prioriza relevancia (gaming/uso) y luego precio
-      const wantsGaming = SINONIMOS.gaming.some(g => q.includes(g));
       const ranked = within.map(p => {
         const t = `${p.title} ${p.description} ${p.category}`.toLowerCase();
         let s = allWords.reduce((a, w) => a + (t.includes(w) ? 1 : 0), 0);
-        if (wantsGaming && /gaming|tuf|rog|strix|rtx|gtx/.test(t)) s += 10; // prioriza gaming real
         return { p, s, price: parseFloat(p.price) || 0 };
       }).sort((a, b) => b.s - a.s || a.price - b.price);
       return ranked.map(r => r.p).slice(0, CONFIG.MAX_PRODUCTS_IN_PROMPT);
     }
-    // nada cabe en el presupuesto -> devolvemos vacio para que el server avise honestamente
     return [];
+  }
+
+  // Sin monto explicito: si el contexto es gaming, filtra a solo gaming.
+  if (wantsGaming) {
+    let onlyGaming = results.filter(isGamingProduct);
+    // Si el scoring no trajo gaming (ej. query de refinamiento "mas economica"
+    // sin palabras de producto), usa TODO el catalogo gaming ordenado por precio.
+    if (onlyGaming.length === 0) {
+      onlyGaming = catalog.filter(isGamingProduct).sort((a, b) => (parseFloat(a.price)||999999) - (parseFloat(b.price)||999999));
+    }
+    if (onlyGaming.length > 0) {
+      // si la query pide economico, ordena por precio
+      if (/(barat|economic|económic|menos|presupuesto)/i.test(q)) {
+        onlyGaming = [...onlyGaming].sort((a, b) => (parseFloat(a.price)||999999) - (parseFloat(b.price)||999999));
+      }
+      return onlyGaming.slice(0, CONFIG.MAX_PRODUCTS_IN_PROMPT);
+    }
+    return []; // pidio gaming y no hay -> server avisa honestamente
   }
 
   const budgetWords = ["barata","barato","económico","economico","precio","accesible","presupuesto","pesos","bajos","low","cheap","plata","billete"];
@@ -699,6 +735,10 @@ REGLAS:
 - Si elige un modelo: confirma su eleccion, felicitalo brevemente y dile que puede dar clic en "Ver producto" de esa laptop para comprarla. NO muestres otras.
 - Si es un agradecimiento o cierre: responde con cortesía breve y ofrece seguir ayudando.
 - Si el cliente reclama que falta un spec que pidio (ej: "pero no tiene i9", "ninguna tiene 32GB"): reconoce con honestidad que ahora mismo no hay en la tienda exactamente ese spec, y explica brevemente por que las que le mostraste igual le sirven (ej: "Cierto, justo ahora no tenemos i9 disponible, pero el Ryzen 7 de la TUF rinde parejito para gaming"). NUNCA digas que una laptop tiene un spec que no tiene.
+- IDONEIDAD PARA GAMING (importante): si el cliente pregunta si una laptop especifica sirve para gaming, juzga HONESTAMENTE por su tarjeta grafica:
+  - Es buena para gaming SOLO si tiene GPU dedicada NVIDIA (RTX o GTX). Ej: RTX 5050, RTX 4050, RTX 3050.
+  - NO es para gaming si tiene graficos integrados (Radeon integrada, Intel Graphics, Intel Arc, Adreno, Radeon Graphics). Estas son para trabajo/estudio. Dilo claro: "esa es mas para trabajo y estudio, no para gaming exigente".
+  - Mira la lista de arriba para ver que GPU tiene la laptop por la que preguntan. NUNCA llames "gaming" a una con graficos integrados.
 - Devuelve SOLO texto plano, sin JSON, sin markdown.`,
         messages: [...histMsgs, { role: "user", content: query }],
       });
@@ -729,7 +769,20 @@ REGLAS:
         if (useMatch) searchQuery = `${query} ${useMatch[0]}`;
       }
     }
-    const relevant = searchProducts(searchQuery);
+    // Contexto gaming: lo pidio ahora, o lo venia pidiendo y ahora solo refina
+    // (ej. "mas economica"). Si es asi, la busqueda excluye laptops no-gaming.
+    const gamingNow = /(gaming|gamer|jugar|juego|fortnite|valorant|lol)/i.test(searchQuery);
+    const pivotedAway = /(trabajo|oficina|universidad|estudio|diseño|diseno|autocad|edicion|edición|programar|ofimatica|ofimática)/i.test(query);
+    let gamingContext = gamingNow;
+    if (!gamingNow && !pivotedAway && session && session.history.length) {
+      const isRefine = /(barat|economic|económic|menos de|presupuesto|otra|otras|\bmas\b|\bmás\b)/i.test(query) && query.split(/\s+/).length <= 6;
+      if (isRefine) {
+        const recentGaming = [...session.history].slice(-6).some(h => h.role === "user" && /(gaming|gamer|jugar|juego|fortnite|valorant|lol)/i.test(h.content));
+        const recentOther = [...session.history].slice(-6).some(h => h.role === "user" && /(trabajo|oficina|universidad|estudio|diseño|diseno|autocad)/i.test(h.content));
+        if (recentGaming && !recentOther) gamingContext = true;
+      }
+    }
+    const relevant = searchProducts(searchQuery, gamingContext);
     if (relevant.length === 0) {
       // Nada cabe: dejamos que Claude redacte el mensaje (natural y en tono de
       // AnastasIA) en vez de un texto fijo. Le pasamos el presupuesto pedido y
@@ -978,7 +1031,8 @@ REGLAS (sin comillas dobles en ningun valor de texto):
     // ── Guardar en memoria: productos mostrados + turno de conversacion ──
     if (session) {
       session.shownProducts = mergedItems.map(it => ({
-        title: it.TITLE, model: (productsToSend.find(p => p.title === it.TITLE)?.model) || "", specs: it.SPECS,
+        title: it.TITLE, model: (productsToSend.find(p => p.title === it.TITLE)?.model) || "",
+        specs: [it.CPU, it.RAM, it.SSD, it.PANTALLA, it.GPU].filter(Boolean).join(" | ") || it.SPECS,
       }));
       session.history.push({ role: "user", content: query });
       session.history.push({ role: "assistant", content: (result.message || "") + " [mostre: " + mergedItems.map(i => i.TITLE).join(", ") + "]" });
