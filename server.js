@@ -148,6 +148,10 @@ function isFollowUp(q) {
     "pero no tiene","pero ninguna tiene","no tienen","ninguna tiene","ninguno tiene",
     "no tiene i9","no tiene i7","queria i9","quería i9","esa no tiene","ese no tiene",
     "pero queria","pero quería","no es lo que pedi","no es lo que pedí",
+    // reclamo de idoneidad (no sirve / no es para X)
+    "no es para gaming","no es para juegos","no sirve para gaming","no sirve para juegos",
+    "no son para gaming","no son gaming","no es gaming","esa no es para","ese no es para",
+    "no sirve para","no sirven para","no es buena para","no son buenas para","no es apta",
     // cortesía / cierre
     "gracias","muchas gracias","listo","perfecto","de una","vale","entendido",
     "buenisimo","buenísimo","chevere","chévere","bacano",
@@ -826,13 +830,47 @@ Escribe un mensaje corto (2-3 frases) que:
     const userMessage = intentMap[messageType];
 
     // Si el cliente queria GAMING pero lo que cabe en su presupuesto NO es gaming,
-    // avisamos a Claude para que lo aclare con honestidad (no venda Vivobook como gaming).
+    // NO mostramos tarjetas de no-gaming (seria contradictorio). En vez de eso,
+    // Claude redacta un mensaje honesto y le preguntamos cuanto puede estirar.
     const wantedGaming = /(gaming|gamer|jugar|juego|fortnite|valorant|lol)/i.test(searchQuery);
     const sentGaming = productsToSend.some(p => /gaming|tuf|rog|strix|rtx|gtx/i.test(`${p.title} ${p.description}`));
-    const gamingNote = (wantedGaming && !sentGaming)
-      ? ` IMPORTANTE: el cliente quiere una laptop para gaming, pero las que caben en su presupuesto NO son gaming (son para trabajo/estudio). Acláralo con honestidad: dile que en ese rango de precio no hay laptops gaming disponibles, que estas sirven para tareas del diario pero no para juegos exigentes, y pregúntale si puede ajustar el presupuesto para una gaming real. NO las presentes como aptas para gaming.`
-      : "";
-    const userMessageFinal = userMessage + gamingNote;
+    if (wantedGaming && !sentGaming) {
+      const budget = extractBudget(q) || extractBudget(searchQuery.toLowerCase());
+      // precio de la gaming mas barata del catalogo, para orientar al cliente
+      const cheapestGaming = catalog
+        .filter(p => /gaming|tuf|rog|strix|rtx|gtx/i.test(`${p.title} ${p.description} ${p.category}`))
+        .reduce((min, p) => { const pr = parseFloat(p.price) || 0; return (pr > 0 && pr < min) ? pr : min; }, Infinity);
+      const gTxt = cheapestGaming !== Infinity ? formatCOP(cheapestGaming) : "";
+      const gPrompt =
+        `Eres AnastasIA, asesora de laptops ASUS Colombia, natural y amigable con toques colombianos sin exagerar.
+El cliente quiere una laptop para GAMING${budget ? ` con presupuesto de ${formatCOP(budget)}` : ""}.
+SITUACION: en ese rango de precio NO hay laptops gaming en la tienda. Las que caben en ese presupuesto son para trabajo/estudio, NO para juegos exigentes.${gTxt ? ` La laptop gaming mas economica disponible cuesta ${gTxt}.` : ""}
+Escribe un mensaje corto (2-3 frases) que:
+- Reconozca con honestidad que en ese presupuesto no hay laptops gaming de verdad.
+- ${gTxt ? `Mencione que las gaming arrancan alrededor de ${gTxt}.` : "Explique que las gaming cuestan un poco mas."}
+- Pregunte hasta cuanto podria estirar el presupuesto para conseguirle una gaming real.
+- NO ofrezcas laptops de trabajo como si sirvieran para gaming. Solo texto, sin listas, sin inventar precios.`;
+      let gMsg;
+      try {
+        const gr = await anthropic.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 180,
+          system: gPrompt,
+          messages: [{ role: "user", content: query }],
+        });
+        gMsg = (gr.content[0]?.text || "").trim();
+      } catch { gMsg = ""; }
+      if (!gMsg) {
+        gMsg = `Parce, en ese presupuesto no tengo laptops gaming de verdad${gTxt ? `; las gaming arrancan alrededor de ${gTxt}` : ""}. ¿Hasta cuánto podrías estirar para conseguirte una que dispare en juegos?`;
+      }
+      if (session) {
+        session.history.push({ role: "user", content: query });
+        session.history.push({ role: "assistant", content: gMsg });
+      }
+      console.log(`🎮 Gaming sin opciones en presupuesto → mensaje honesto, sin tarjetas`);
+      return res.json({ message: gMsg, items: [] });
+    }
+    const userMessageFinal = userMessage;
 
     // Contexto de memoria: si ya mostramos laptops antes, decirle a Claude
     // cuales fueron para que el "message" no repita ni ignore lo anterior
