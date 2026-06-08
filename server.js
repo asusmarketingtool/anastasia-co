@@ -47,11 +47,57 @@ function getSession(id) {
   const now = Date.now();
   let s = magentoSessions[id];
   if (!s || (now - s.lastSeen) > MAGENTO_SESSION_TTL_MS) {
-    s = { history: [], shownProducts: [], lastSeen: now };
+    // profile: perfil acumulado de la charla — usos que ha pedido el cliente
+    // (gaming, universidad, etc.) y su presupuesto. Persiste hasta que cambie.
+    s = { history: [], shownProducts: [], profile: { uses: [], budget: null }, lastSeen: now };
     magentoSessions[id] = s;
   }
+  if (!s.profile) s.profile = { uses: [], budget: null };
   s.lastSeen = now;
   return s;
+}
+
+// Mapa de uso -> palabras que lo activan. Detecta lo que el cliente menciona.
+const USE_PATTERNS = {
+  gaming:      /(gaming|gamer|jugar|juego|juegos|fortnite|valorant|\blol\b|gta|warzone|cod|videojuego)/i,
+  universidad: /(universidad|\bla u\b|estudiar|estudio|estudiante|carrera|tesis|programar|programacion|programación)/i,
+  trabajo:     /(trabajo|trabajar|oficina|ofimatica|ofimática|curro|pega|negocio|empresa)/i,
+  diseño:      /(diseño|diseno|autocad|render|3d|edicion|edición|edita|photoshop|illustrator|premiere|arquitectura)/i,
+  portatil:    /(liviana|ligera|portatil|portátil|llevar|viaje|delgada|ultraligera)/i,
+};
+
+// Actualiza el perfil de la sesion con lo que dice el cliente en este mensaje.
+// Si pide "solo X" o "ya no gaming", reemplaza/quita. Si suma un uso, lo agrega.
+function updateProfile(session, query) {
+  if (!session) return;
+  const q = query.toLowerCase();
+  const p = session.profile;
+
+  // ¿Pivote explícito? ("solo para trabajo", "ahora para la u", "ya no gaming")
+  const exclusive = /\b(solo|solamente|unicamente|únicamente|nada mas|nada más|nomas|nomás|ahora si|ahora sí|mejor solo|en realidad)\b/i.test(q);
+  const dropGaming = /(ya no.*(gaming|juego|jugar)|no.*(para )?(gaming|juegos|jugar)|sin juegos|nada de juego)/i.test(q);
+
+  // Detectar usos mencionados en este mensaje
+  const mentioned = [];
+  for (const [use, re] of Object.entries(USE_PATTERNS)) {
+    if (re.test(q)) mentioned.push(use);
+  }
+
+  if (dropGaming) p.uses = p.uses.filter(u => u !== "gaming");
+
+  if (mentioned.length) {
+    if (exclusive) {
+      // "solo para X" -> reemplaza el perfil por lo mencionado ahora
+      p.uses = mentioned;
+    } else {
+      // suma los nuevos sin perder los anteriores
+      mentioned.forEach(u => { if (!p.uses.includes(u)) p.uses.push(u); });
+    }
+  }
+
+  // Presupuesto: si menciona uno nuevo, actualiza
+  const b = extractBudget(q);
+  if (b) p.budget = b;
 }
 
 // Limpieza periodica de sesiones viejas (evita que la RAM crezca infinito).
@@ -139,6 +185,11 @@ function isFollowUp(q) {
     "cual recomiendas","cuál recomiendas","de esas","de estas","de las que",
     "la primera","la segunda","la tercera","esa cual","cual de las",
     "diferencia entre","comparalas","compáralas","cual elijo","cuál elijo",
+    // "la mejor DE las tres/esas" = comparar entre lo mostrado (no nueva busqueda)
+    "de las tres","de los tres","mejor de las","mejor de los","mejor de esas",
+    "mejor de estas","mejor de esos","la mejor de","el mejor de","dame la mejor",
+    "cual es la mejor","cuál es la mejor","la mas potente de","la más potente de",
+    "recomiendame la","recomiéndame la","elijo","me quedo con","cual elegir","cuál elegir",
     // preguntas de idoneidad sobre las que ya mostro (referencia con demostrativos)
     "estas sirven","estas son buenas","estas son aptas","estas funcionan",
     "estos sirven","estos son buenos","estas siguen","estos siguen",
@@ -440,6 +491,7 @@ app.get("/anastasia", async (req, res) => {
   const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
   const sessionId = req.query.session || req.query.session_id || "";
   const session = getSession(sessionId); // null si no mandan session
+  updateProfile(session, query); // mantiene el perfil acumulado (usos + presupuesto)
   console.log(`AnastasIA CO consulta: "${query}"${sessionId ? ` [${sessionId}]` : ""}`);
   if (!query) return res.json({ items: [] });
 
@@ -756,37 +808,31 @@ REGLAS:
     }
 
     // ── Search products ──────────────────────────────────────────────
-    // Si el mensaje es casi solo un presupuesto ("5 millones", "algo de 4 palos")
-    // sin tipo de uso, le anexamos el contexto previo (ej: gaming) para que la
-    // busqueda no pierda el hilo de lo que el cliente venia buscando.
+    // ── Contexto desde el PERFIL acumulado de la conversacion ─────────
+    // El perfil (session.profile) ya tiene los usos que el cliente ha pedido
+    // (gaming, universidad...) y su presupuesto, y persiste hasta que cambie.
+    // Asi, si pidio gaming+u y ahora refina, NO perdemos el gaming.
+    const profile = session?.profile || { uses: [], budget: null };
+
+    // Enriquecer la busqueda con los usos del perfil que no esten ya en el query.
     let searchQuery = query;
-    const hasUseType = /(gaming|gamer|jugar|juego|fortnite|trabajo|oficina|universidad|estudio|diseño|diseno|autocad|edicion|edición|programar)/i.test(query);
-    const budgetOnly = extractBudget(query.toLowerCase()) && !hasUseType;
-    if (budgetOnly && session && session.history.length) {
-      const lastUser = [...session.history].reverse().find(h => h.role === "user" && /(gaming|gamer|jugar|juego|fortnite|trabajo|oficina|universidad|estudio|diseño|diseno|autocad|edicion|programar)/i.test(h.content));
-      if (lastUser) {
-        const useMatch = lastUser.content.match(/(gaming|gamer|jugar|juego|fortnite|trabajo|oficina|universidad|estudio|diseño|diseno|autocad|edicion|programar)/i);
-        if (useMatch) searchQuery = `${query} ${useMatch[0]}`;
+    const queryLow = query.toLowerCase();
+    const useKeyword = { gaming: "gaming", universidad: "universidad", trabajo: "trabajo", diseño: "diseño", portatil: "portatil" };
+    profile.uses.forEach(u => {
+      const kw = useKeyword[u];
+      if (kw && !queryLow.includes(kw) && !USE_PATTERNS[u].test(queryLow)) {
+        searchQuery += ` ${kw}`;
       }
+    });
+    // Si el cliente dio un presupuesto antes y ahora no menciona ninguno, lo aplicamos.
+    if (profile.budget && !extractBudget(queryLow)) {
+      searchQuery += ` ${Math.round(profile.budget / 1000000)} millones`;
     }
-    // Contexto gaming: lo pidio ahora, o lo venia pidiendo y ahora solo refina
-    // (ej. "mas economica"). Gaming+universidad SIGUE siendo gaming (Fortnite
-    // necesita GPU dedicada). Solo se descarta si en ESTE mensaje el cliente
-    // pivotea explicito a un uso no-gaming ("ahora para trabajo", "solo ofimatica").
-    const gamingNow = /(gaming|gamer|jugar|juego|fortnite|valorant|lol|gta|cod|warzone)/i.test(searchQuery);
-    // pivot real: menciona un uso no-gaming SIN mencionar gaming en el mismo mensaje
-    const mentionsNonGaming = /(solo trabajo|para trabajo|para oficina|ofimatica|ofimática|solo estudiar|solo la oficina|nada de juego|no juego|no gaming|sin juegos)/i.test(query);
-    const mentionsGamingNow = /(gaming|gamer|jugar|juego|fortnite|valorant|lol|diversion|diversión)/i.test(query);
-    const pivotedAway = mentionsNonGaming && !mentionsGamingNow;
-    let gamingContext = gamingNow;
-    if (!gamingNow && !pivotedAway && session && session.history.length) {
-      // refinamiento corto ("mas economica", "otra", "menos de X") -> hereda gaming
-      const isRefine = /(barat|economic|económic|menos|presupuesto|otra|otras|\bmas\b|\bmás\b|opcion|opción|economic)/i.test(query) && query.split(/\s+/).length <= 7;
-      if (isRefine) {
-        const recentGaming = [...session.history].slice(-8).some(h => h.role === "user" && /(gaming|gamer|jugar|juego|fortnite|valorant|lol|diversion|diversión)/i.test(h.content));
-        if (recentGaming) gamingContext = true;
-      }
-    }
+
+    // Gaming context viene del perfil: si "gaming" esta entre los usos activos,
+    // filtramos a gaming real (sin importar que tambien quiera u/trabajo).
+    const gamingContext = profile.uses.includes("gaming");
+
     const relevant = searchProducts(searchQuery, gamingContext);
     if (relevant.length === 0) {
       // Nada cabe: dejamos que Claude redacte el mensaje (natural y en tono de
