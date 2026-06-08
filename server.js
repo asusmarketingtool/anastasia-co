@@ -974,7 +974,14 @@ Escribe un mensaje corto (2-3 frases) que:
       console.log(`🎮 Gaming sin opciones en presupuesto → mensaje honesto, sin tarjetas`);
       return res.json({ message: gMsg, items: [] });
     }
-    const userMessageFinal = userMessage;
+    // Si el perfil acumulo varios usos (ej. universidad + gaming), se lo decimos
+    // a Claude para que el "ideal_para" refleje TODOS, no solo el ultimo pedido.
+    const useLabel = { gaming: "gaming", universidad: "universidad", trabajo: "trabajo", diseño: "diseño", portatil: "portabilidad" };
+    const profileUses = (session?.profile?.uses || []).map(u => useLabel[u] || u);
+    const usesNote = profileUses.length > 1
+      ? ` El cliente usara la laptop para varias cosas: ${profileUses.join(" y ")}. En "ideal_para" de cada producto refleja los usos que apliquen (ej: "Universidad y gaming"), no solo uno, siempre que el producto sirva para ellos.`
+      : "";
+    const userMessageFinal = userMessage + usesNote;
 
     // Contexto de memoria: si ya mostramos laptops antes, decirle a Claude
     // cuales fueron para que el "message" no repita ni ignore lo anterior
