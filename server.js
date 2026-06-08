@@ -770,16 +770,21 @@ REGLAS:
       }
     }
     // Contexto gaming: lo pidio ahora, o lo venia pidiendo y ahora solo refina
-    // (ej. "mas economica"). Si es asi, la busqueda excluye laptops no-gaming.
-    const gamingNow = /(gaming|gamer|jugar|juego|fortnite|valorant|lol)/i.test(searchQuery);
-    const pivotedAway = /(trabajo|oficina|universidad|estudio|diseño|diseno|autocad|edicion|edición|programar|ofimatica|ofimática)/i.test(query);
+    // (ej. "mas economica"). Gaming+universidad SIGUE siendo gaming (Fortnite
+    // necesita GPU dedicada). Solo se descarta si en ESTE mensaje el cliente
+    // pivotea explicito a un uso no-gaming ("ahora para trabajo", "solo ofimatica").
+    const gamingNow = /(gaming|gamer|jugar|juego|fortnite|valorant|lol|gta|cod|warzone)/i.test(searchQuery);
+    // pivot real: menciona un uso no-gaming SIN mencionar gaming en el mismo mensaje
+    const mentionsNonGaming = /(solo trabajo|para trabajo|para oficina|ofimatica|ofimática|solo estudiar|solo la oficina|nada de juego|no juego|no gaming|sin juegos)/i.test(query);
+    const mentionsGamingNow = /(gaming|gamer|jugar|juego|fortnite|valorant|lol|diversion|diversión)/i.test(query);
+    const pivotedAway = mentionsNonGaming && !mentionsGamingNow;
     let gamingContext = gamingNow;
     if (!gamingNow && !pivotedAway && session && session.history.length) {
-      const isRefine = /(barat|economic|económic|menos de|presupuesto|otra|otras|\bmas\b|\bmás\b)/i.test(query) && query.split(/\s+/).length <= 6;
+      // refinamiento corto ("mas economica", "otra", "menos de X") -> hereda gaming
+      const isRefine = /(barat|economic|económic|menos|presupuesto|otra|otras|\bmas\b|\bmás\b|opcion|opción|economic)/i.test(query) && query.split(/\s+/).length <= 7;
       if (isRefine) {
-        const recentGaming = [...session.history].slice(-6).some(h => h.role === "user" && /(gaming|gamer|jugar|juego|fortnite|valorant|lol)/i.test(h.content));
-        const recentOther = [...session.history].slice(-6).some(h => h.role === "user" && /(trabajo|oficina|universidad|estudio|diseño|diseno|autocad)/i.test(h.content));
-        if (recentGaming && !recentOther) gamingContext = true;
+        const recentGaming = [...session.history].slice(-8).some(h => h.role === "user" && /(gaming|gamer|jugar|juego|fortnite|valorant|lol|diversion|diversión)/i.test(h.content));
+        if (recentGaming) gamingContext = true;
       }
     }
     const relevant = searchProducts(searchQuery, gamingContext);
