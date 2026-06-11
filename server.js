@@ -132,16 +132,16 @@ function isSpam(ip, query) {
 }
 
 const offTopicWords = [
-  "política","gobierno","presidente","elecciones","partido","congreso",
+  "política","gobierno","presidente","elecciones","congreso",
   "religion","religión","dios","iglesia",
   "sexo","pornografía","pornografia","xxx",
   "drogas","cocaína","cocaina","marihuana",
   "hack","hackear","piratear","crackear",
   "receta","comida","cocinar","ingredientes",
   "futbol","fútbol","deporte","partido de",
-  "pelicula","película","serie","netflix",
+  "pelicula","película","serie",
   "música","canción","cancion","letra de",
-  "chiste","broma","cuento",
+  "chiste","broma","un cuento","cuentame un cuento",
   "noticias","periodico","periódico","novedades del mundo",
 ];
 // Coincidencia por PALABRA COMPLETA (no por fragmento). Evita falsos
@@ -561,17 +561,19 @@ app.get("/anastasia", async (req, res) => {
     // ── Service redirect ─────────────────────────────────────────────
     const serviceWords = [
       "cargador","cargadora","charger","cable carga","adaptador","fuente de poder",
+      "dañó","daño","dañada","dañado","quemó","quemada","se quemó","dejó de funcionar",
+      "cambiar el ventilador","se rompió","esta rota","esta roto","no me sirve la",
       "bateria hinchada","bateria de repuesto","cambio de bateria",
       "pantalla rota","reemplazo de pantalla","cambio de pantalla","pantalla de repuesto",
       "reparacion","reparación","repair","repuesto","repuestos","spare part","pieza","componente",
       "arreglar","arreglo","tecnico","técnico","servicio tecnico","servicio técnico",
       "motherboard","motherboards","placa madre","placas madre","tarjeta madre","tarjetas madre",
-      "tarjeta grafica","tarjeta gráfica","graphics card","gpu externa",
+      "graphics card","gpu externa",
       "psu","fuente de alimentacion","fuente de alimentación",
       "ram suelta","memoria ram suelta","disco duro","hdd",
-      "gabinete","case pc","ventilador","cooler",
+      "gabinete","case pc","cooler",
       "celular","telefono","teléfono","smartphone","iphone","samsung","xiaomi",
-      "garantia","garantía","warranty",
+      "warranty",
       "impresora","router","modem","módem",
       "memoria usb","pendrive","disco externo",
       "no prende","no enciende","no funciona","se apaga","pantalla negra","pantalla azul",
