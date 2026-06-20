@@ -27,6 +27,9 @@ const CONFIG = {
   RATE_LIMIT_MAX: 40,
   RATE_LIMIT_WINDOW_MS: 60 * 60 * 1000,
   MAX_QUERY_LENGTH: 300,
+  // ── Tracking a Google Sheets (pestaña Freshchat) ──
+  TRACK_URL: process.env.TRACK_URL || "https://script.google.com/macros/s/AKfycbxp-9dO08nvUk0SRuSYh6Bx86hPS1mZ3iCdBM5trcVAX7YvlKwDtwO7WrUgmXjaqJOT_A/exec",
+  TRACK_TAB: "Freshchat",
 };
 
 let catalog = [];
@@ -34,21 +37,15 @@ const conversations = {};
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ── Memoria por sesion para Magento (GET /anastasia) ─────────────────
-// Igual que el objeto `conversations` de Freshchat, pero para la pagina
-// web. Vive en RAM (sin base de datos). Guarda los ultimos turnos y los
-// productos mostrados, para que AnastasIA entienda "mas barata que esas",
-// reconozca cuando el cliente elige un modelo, y no re-recomiende.
 const magentoSessions = {};
-const MAGENTO_HISTORY_TURNS = 6;          // cuantos turnos recordar
-const MAGENTO_SESSION_TTL_MS = 60 * 60 * 1000; // 1h sin actividad -> se borra
+const MAGENTO_HISTORY_TURNS = 6;
+const MAGENTO_SESSION_TTL_MS = 60 * 60 * 1000;
 
 function getSession(id) {
   if (!id) return null;
   const now = Date.now();
   let s = magentoSessions[id];
   if (!s || (now - s.lastSeen) > MAGENTO_SESSION_TTL_MS) {
-    // profile: perfil acumulado de la charla — usos que ha pedido el cliente
-    // (gaming, universidad, etc.) y su presupuesto. Persiste hasta que cambie.
     s = { history: [], shownProducts: [], profile: { uses: [], budget: null }, lastSeen: now };
     magentoSessions[id] = s;
   }
@@ -57,7 +54,6 @@ function getSession(id) {
   return s;
 }
 
-// Mapa de uso -> palabras que lo activan. Detecta lo que el cliente menciona.
 const USE_PATTERNS = {
   gaming:      /(gaming|gamer|jugar|juego|juegos|fortnite|valorant|\blol\b|gta|warzone|cod|videojuego)/i,
   universidad: /(universidad|\bla u\b|estudiar|estudio|estudiante|carrera|tesis|programar|programacion|programación)/i,
@@ -66,41 +62,28 @@ const USE_PATTERNS = {
   portatil:    /(liviana|ligera|portatil|portátil|llevar|viaje|delgada|ultraligera)/i,
 };
 
-// Actualiza el perfil de la sesion con lo que dice el cliente en este mensaje.
-// Si pide "solo X" o "ya no gaming", reemplaza/quita. Si suma un uso, lo agrega.
 function updateProfile(session, query) {
   if (!session) return;
   const q = query.toLowerCase();
   const p = session.profile;
-
-  // ¿Pivote explícito? ("solo para trabajo", "ahora para la u", "ya no gaming")
   const exclusive = /\b(solo|solamente|unicamente|únicamente|nada mas|nada más|nomas|nomás|ahora si|ahora sí|mejor solo|en realidad)\b/i.test(q);
   const dropGaming = /(ya no.*(gaming|juego|jugar)|no.*(para )?(gaming|juegos|jugar)|sin juegos|nada de juego)/i.test(q);
-
-  // Detectar usos mencionados en este mensaje
   const mentioned = [];
   for (const [use, re] of Object.entries(USE_PATTERNS)) {
     if (re.test(q)) mentioned.push(use);
   }
-
   if (dropGaming) p.uses = p.uses.filter(u => u !== "gaming");
-
   if (mentioned.length) {
     if (exclusive) {
-      // "solo para X" -> reemplaza el perfil por lo mencionado ahora
       p.uses = mentioned;
     } else {
-      // suma los nuevos sin perder los anteriores
       mentioned.forEach(u => { if (!p.uses.includes(u)) p.uses.push(u); });
     }
   }
-
-  // Presupuesto: si menciona uno nuevo, actualiza
   const b = extractBudget(q);
   if (b) p.budget = b;
 }
 
-// Limpieza periodica de sesiones viejas (evita que la RAM crezca infinito).
 setInterval(() => {
   const now = Date.now();
   for (const id in magentoSessions) {
@@ -144,9 +127,6 @@ const offTopicWords = [
   "chiste","broma","un cuento","cuentame un cuento",
   "noticias","periodico","periódico","novedades del mundo",
 ];
-// Coincidencia por PALABRA COMPLETA (no por fragmento). Evita falsos
-// positivos como "buenas" conteniendo "nas", o "descuento" conteniendo
-// "cuento". Frases con espacios se buscan tal cual.
 function hasWord(text, words) {
   const q = ` ${text.toLowerCase()} `;
   return words.some(w => {
@@ -160,55 +140,41 @@ function isOffTopic(query) {
   return hasWord(query, offTopicWords);
 }
 
-// ── Follow-up / conversacional (responde sin re-recomendar) ──────────
-// Detecta preguntas de seguimiento (envíos, garantía, pago, "cuál me
-// conviene") que NO son búsquedas de producto. Solo se usa en GET /anastasia
-// (Magento). Freshchat NO pasa por aquí.
 function isFollowUp(q) {
   const followUpWords = [
-    // envíos / tiempos de entrega
     "cuanto tarda","cuánto tarda","cuanto demora","cuánto demora","cuanto tiempo",
     "cuánto tiempo","tiempo de entrega","tiempo de envio","tiempo de envío",
     "cuando llega","cuándo llega","cuando me llega","dias habiles","días hábiles",
     "envio a","envío a","envian a","envían a","llega a","domicilio","despacho",
-    // garantía (info general; daños/repuestos ya los atrapa serviceWords antes)
     "tiene garantia","tiene garantía","cuanta garantia","cuánta garantía",
     "anos de garantia","años de garantía","cubre la garantia","cubre la garantía",
-    // pago / financiación (info general)
     "formas de pago","medios de pago","puedo pagar","aceptan","cuotas","financiacion",
     "financiación","tarjeta de credito","tarjeta de crédito","addi","sistecredito",
     "como es el checkout","checkout","como compro","cómo compro","como pago","cómo pago",
     "proceso de compra","como finalizo","cómo finalizo","como hago la compra","carrito",
     "factura","facturacion","facturación","datacredito","pse","contraentrega","contra entrega",
-    // referencia a lo ya mostrado
     "cual me conviene","cuál me conviene","cual es mejor","cuál es mejor",
     "cual recomiendas","cuál recomiendas","de esas","de estas","de las que",
     "la primera","la segunda","la tercera","esa cual","cual de las",
     "diferencia entre","comparalas","compáralas","cual elijo","cuál elijo",
-    // "la mejor DE las tres/esas" = comparar entre lo mostrado (no nueva busqueda)
     "de las tres","de los tres","mejor de las","mejor de los","mejor de esas",
     "mejor de estas","mejor de esos","la mejor de","el mejor de","dame la mejor",
     "cual es la mejor","cuál es la mejor","la mas potente de","la más potente de",
     "recomiendame la","recomiéndame la","elijo","me quedo con","cual elegir","cuál elegir",
-    // preguntas de idoneidad sobre las que ya mostro (referencia con demostrativos)
     "estas sirven","estas son buenas","estas son aptas","estas funcionan",
     "estos sirven","estos son buenos","estas siguen","estos siguen",
     "siguen siendo buenas","siguen siendo buenos","esas sirven","esas son buenas",
     "estas valen","estas aguantan","estos aguantan","estas corren","estos corren",
-    // reclamo de spec faltante (responder con honestidad, no re-buscar)
     "pero no tiene","pero ninguna tiene","no tienen","ninguna tiene","ninguno tiene",
     "no tiene i9","no tiene i7","queria i9","quería i9","esa no tiene","ese no tiene",
     "pero queria","pero quería","no es lo que pedi","no es lo que pedí",
-    // reclamo de idoneidad (no sirve / no es para X)
     "no es para gaming","no es para juegos","no sirve para gaming","no sirve para juegos",
     "no son para gaming","no son gaming","no es gaming","esa no es para","ese no es para",
     "no sirve para","no sirven para","no es buena para","no son buenas para","no es apta",
-    // preguntas de idoneidad (¿es buena para X? / la que me recomendaste)
     "es buena para","es buen para","son buenas para","sirve para","sirven para","es apta para",
     "es para gaming","es buena para gaming","sirve para gaming","aguanta gaming","corre",
     "me recomendaste","que recomendaste","recomendaste","la que me mostraste","esa que",
     "es buena la","es buena esa","como es la","que tal la","funciona para",
-    // cortesía / cierre
     "gracias","muchas gracias","listo","perfecto","de una","vale","entendido",
     "buenisimo","buenísimo","chevere","chévere","bacano",
   ];
@@ -256,9 +222,6 @@ async function refreshCatalog() {
       const offer = parseFloat(p.price) || 0;
       if (regular > 0 && offer > 0 && (offer / regular) < 0.5) return false;
 
-      // ── Filtrar accesorios: el feed trae cases, mochilas, mouse, etc.
-      // que NO son laptops. Sin esto, un case barato se cuela como
-      // "alternativa economica" y rompe la recomendacion.
       const t = `${p.title} ${p.category}`.toLowerCase();
       const accessoryWords = [
         "case","carcasa","funda","cover","sleeve","estuche","forro",
@@ -272,13 +235,10 @@ async function refreshCatalog() {
       ];
       if (accessoryWords.some(w => t.includes(w))) return false;
 
-      // Handhelds (ROG Ally / XBOX Ally) NO son laptops y no estan en stock.
-      // Cuestan >$1M asi que el piso de precio no los atrapa; se filtran aqui.
       const handheldWords = ["ally","xbox ally","rog ally","steam deck","handheld"];
       if (handheldWords.some(w => t.includes(w))) return false;
 
       // Piso de precio: ninguna laptop ASUS en COP baja de ~$1.000.000.
-      // Accesorios (cases, mouse) estan muy por debajo -> se descartan.
       if (offer > 0 && offer < 1000000) return false;
 
       return true;
@@ -309,13 +269,10 @@ const SINONIMOS = {
   handheld:      ["ally","handheld","consola","portatil","portable","xbox","gamepass","game pass","steam","steam deck","mini consola","joystick","control"],
 };
 
-// Extrae un techo de presupuesto en COP desde frases como "4 millones",
-// "de 4 palos", "menos de 3.500.000", "hasta 5 millones". Devuelve null si no hay.
+// Extrae un techo de presupuesto en COP. Devuelve null si no hay.
 function extractBudget(q) {
-  // "4 millones" / "4 palos" / "4 lucas" (millones)
   let m = q.match(/(\d+(?:[.,]\d+)?)\s*(millones|millon|palos|palo|lucas|luca|m\b)/i);
   if (m) return Math.round(parseFloat(m[1].replace(",", ".")) * 1000000);
-  // numero grande con separadores: 3.500.000 / 3500000 / 3,500,000
   m = q.match(/(\d[\d.,]{5,})/);
   if (m) {
     const n = parseInt(m[1].replace(/[.,]/g, ""), 10);
@@ -324,12 +281,9 @@ function extractBudget(q) {
   return null;
 }
 
-// Una laptop es "gaming" solo si tiene GPU dedicada NVIDIA o es linea gaming.
-// Radeon integrada / Intel Graphics / Arc / Adreno = NO gaming.
 function isGamingProduct(p) {
   const t = `${p.title} ${p.description} ${p.category}`.toLowerCase();
   if (/integrad|intel graphics|intel hd|adreno|radeon graphics|radeon integrada/.test(t)) {
-    // graficos integrados: solo es gaming si ademas menciona RTX/GTX dedicada
     return /\brtx\s*\d{3,4}|\bgtx\s*\d{3,4}/.test(t);
   }
   return /gaming|\btuf\b|\brog\b|strix|\brtx\b|\bgtx\b|nitro/.test(t);
@@ -353,17 +307,15 @@ function searchProducts(query, wantsGamingCtx) {
   });
   let results = scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score).slice(0, CONFIG.MAX_PRODUCTS_IN_PROMPT).map(s => s.product);
 
-  // ── Filtro por PRESUPUESTO: si el cliente dio un monto, descarta lo que se pase ──
   const budget = extractBudget(q);
   if (budget) {
     let within = catalog.filter(p => {
       const price = parseFloat(p.price) || 0;
       return price > 0 && price <= budget;
     });
-    // Si el contexto es gaming, EXCLUIR las no-gaming (no solo priorizar).
     if (wantsGaming) {
       const onlyGaming = within.filter(isGamingProduct);
-      within = onlyGaming; // si queda vacio, el server avisa honestamente
+      within = onlyGaming;
     }
     if (within.length > 0) {
       const ranked = within.map(p => {
@@ -376,22 +328,18 @@ function searchProducts(query, wantsGamingCtx) {
     return [];
   }
 
-  // Sin monto explicito: si el contexto es gaming, filtra a solo gaming.
   if (wantsGaming) {
     let onlyGaming = results.filter(isGamingProduct);
-    // Si el scoring no trajo gaming (ej. query de refinamiento "mas economica"
-    // sin palabras de producto), usa TODO el catalogo gaming ordenado por precio.
     if (onlyGaming.length === 0) {
       onlyGaming = catalog.filter(isGamingProduct).sort((a, b) => (parseFloat(a.price)||999999) - (parseFloat(b.price)||999999));
     }
     if (onlyGaming.length > 0) {
-      // si la query pide economico, ordena por precio
       if (/(barat|economic|económic|menos|presupuesto)/i.test(q)) {
         onlyGaming = [...onlyGaming].sort((a, b) => (parseFloat(a.price)||999999) - (parseFloat(b.price)||999999));
       }
       return onlyGaming.slice(0, CONFIG.MAX_PRODUCTS_IN_PROMPT);
     }
-    return []; // pidio gaming y no hay -> server avisa honestamente
+    return [];
   }
 
   const budgetWords = ["barata","barato","económico","economico","precio","accesible","presupuesto","pesos","bajos","low","cheap","plata","billete"];
@@ -458,6 +406,27 @@ async function replyOnFreshchat(conversationId, actorId, text) {
   if (!res.ok) throw new Error(`Freshchat API error ${res.status}: ${await res.text()}`);
 }
 
+// ── Log de Freshchat a Google Sheets (pestaña separada vía __tab) ────
+// Reusa el mismo collector GAS que Magento, pero con __tab=Freshchat para
+// que caiga en su propia pestaña. Fire-and-forget: no bloquea ni rompe el
+// webhook si el sheet falla. GET con texto recortado (límite de URL).
+function trackFreshchat(fields) {
+  if (!CONFIG.TRACK_URL) return;
+  try {
+    const params = new URLSearchParams({
+      __tab: CONFIG.TRACK_TAB,
+      country: "CO",
+      event: "query",
+      source: "freshchat",
+      ...fields,
+    });
+    fetch(`${CONFIG.TRACK_URL}?${params.toString()}`)
+      .catch(err => console.error("⚠️ track Freshchat falló:", err.message));
+  } catch (e) {
+    console.error("⚠️ track Freshchat error:", e.message);
+  }
+}
+
 app.post("/webhook/freshchat", async (req, res) => {
   res.sendStatus(200);
   try {
@@ -472,6 +441,11 @@ app.post("/webhook/freshchat", async (req, res) => {
     console.log(`[${conversationId}] Usuario: ${userMessage}`);
     const reply = await askClaude(conversationId, userMessage);
     console.log(`[${conversationId}] Claude: ${reply.slice(0, 80)}...`);
+    trackFreshchat({
+      session_id: conversationId,
+      query: userMessage.slice(0, 500),
+      bot_message: reply.slice(0, 500),
+    });
     await replyOnFreshchat(conversationId, agentId, reply);
   } catch (err) {
     console.error("❌ Error procesando webhook:", err.message);
@@ -491,12 +465,11 @@ app.get("/anastasia", async (req, res) => {
   const query = req.query.q || req.query.query || req.query.busqueda || "";
   const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
   const sessionId = req.query.session || req.query.session_id || "";
-  const session = getSession(sessionId); // null si no mandan session
-  updateProfile(session, query); // mantiene el perfil acumulado (usos + presupuesto)
+  const session = getSession(sessionId);
+  updateProfile(session, query);
   console.log(`AnastasIA CO consulta: "${query}"${sessionId ? ` [${sessionId}]` : ""}`);
   if (!query) return res.json({ items: [] });
 
-  // ── Guardrail 0: URL detector ────────────────────────────────────
   if (query.startsWith("http://") || query.startsWith("https://")) {
     return res.json({
       message: "Solo puedo ayudarte con recomendaciones de laptops ASUS. ¿Qué tipo de laptop estás buscando?",
@@ -504,7 +477,6 @@ app.get("/anastasia", async (req, res) => {
     });
   }
 
-  // ── Guardrail 1: Query length ────────────────────────────────────
   if (query.length > CONFIG.MAX_QUERY_LENGTH) {
     return res.json({
       message: "Tu mensaje es muy largo. Por favor escribe una consulta más corta.",
@@ -512,7 +484,6 @@ app.get("/anastasia", async (req, res) => {
     });
   }
 
-  // ── Guardrail 2: Rate limiting ───────────────────────────────────
   if (isRateLimited(ip)) {
     return res.json({
       message: "Has hecho varias consultas seguidas. Dame un momentico y vuelve a intentar — o si prefieres, habla directo con un asesor.",
@@ -521,7 +492,6 @@ app.get("/anastasia", async (req, res) => {
     });
   }
 
-  // ── Guardrail 3: Spam detection ──────────────────────────────────
   if (isSpam(ip, query)) {
     return res.json({
       message: "Parece que estás repitiendo la misma búsqueda. ¿Puedo ayudarte con algo más específico?",
@@ -529,7 +499,6 @@ app.get("/anastasia", async (req, res) => {
     });
   }
 
-  // ── Guardrail 4: Off-topic detection ─────────────────────────────
   if (isOffTopic(query)) {
     return res.json({
       message: "Solo puedo ayudarte con laptops ASUS. ¿Estás buscando una laptop para gaming, trabajo, universidad o diseño?",
@@ -540,7 +509,6 @@ app.get("/anastasia", async (req, res) => {
   try {
     const q = query.toLowerCase();
 
-    // ── Sales redirect ───────────────────────────────────────────────
     const salesWords = [
       "cupon","cupón","codigo descuento","código descuento","promocion","promoción",
       "pedido","mi orden","mi compra","pago","factura","boleta",
@@ -558,7 +526,6 @@ app.get("/anastasia", async (req, res) => {
       });
     }
 
-    // ── Service redirect ─────────────────────────────────────────────
     const serviceWords = [
       "cargador","cargadora","charger","cable carga","adaptador","fuente de poder",
       "dañó","daño","dañada","dañado","quemó","quemada","se quemó","dejó de funcionar",
@@ -595,7 +562,6 @@ app.get("/anastasia", async (req, res) => {
       });
     }
 
-    // ── ROG Ally redirect ────────────────────────────────────────────
     const isHandheld = q.includes("ally") || q.includes("rog ally") ||
       (q.includes("handheld") && !q.includes("laptop")) ||
       q.includes("steam deck") ||
@@ -607,7 +573,6 @@ app.get("/anastasia", async (req, res) => {
       });
     }
 
-    // ── Non-laptop redirect ──────────────────────────────────────────
     const nonLaptopWords = [
       "torre","desktop","pc de escritorio","computadora de escritorio",
       "all in one","all-in-one","rog pc","rog desktop","mini pc","nuc",
@@ -625,9 +590,6 @@ app.get("/anastasia", async (req, res) => {
       });
     }
 
-    // ── Ficha tecnica completa de UN modelo ──────────────────────────
-    // Si el cliente pide "specs completos / ficha tecnica" de un modelo,
-    // devolvemos una tarjeta de ficha (specSheet) en vez de texto plano.
     const wantsFullSpecs = hasWord(q, [
       "specs completos","especificaciones completas","ficha tecnica","ficha técnica",
       "todos los specs","todas las especificaciones","specs de","especificaciones de",
@@ -635,22 +597,18 @@ app.get("/anastasia", async (req, res) => {
       "ficha completa","specs completas",
     ]);
     if (wantsFullSpecs) {
-      // Resolver a que producto se refiere: primero entre los ya mostrados,
-      // si no, buscar en el catalogo.
       let target = null;
       const qNorm = q.replace(/[^a-z0-9]/g, "");
       const pool = (session && session.shownProducts.length)
         ? session.shownProducts.map(sp => catalog.find(c => c.title === sp.title)).filter(Boolean)
         : [];
       const candidates = pool.length ? pool : searchProducts(query);
-      // Puntuar TODOS los candidatos y quedarnos con el mejor (no el primero
-      // que pase el umbral), para que "a15" gane sobre "a16" si pedis la a15.
       const scoreOf = (p) => {
         const model = (p.model || "").toLowerCase().replace(/[^a-z0-9]/g, "");
         const title = (p.title || "").toLowerCase();
         const qWords = q.split(/\s+/).filter(w => w.length > 2);
         let sc = qWords.filter(w => title.includes(w.replace(/[?¿!¡.,]/g, ""))).length;
-        if (model && model.length >= 4 && qNorm.includes(model)) sc += 5; // match por part-number = fuerte
+        if (model && model.length >= 4 && qNorm.includes(model)) sc += 5;
         return sc;
       };
       let best = null, bestScore = 0;
@@ -659,7 +617,6 @@ app.get("/anastasia", async (req, res) => {
         if (sc > bestScore) { bestScore = sc; best = p; }
       }
       target = (bestScore >= 2) ? best : null;
-      // "specs de esta/esta laptop" sin nombre claro -> usar la ultima mostrada
       if (!target) {
         if (/\b(esta|este|esa|ese|la misma|el mismo)\b/.test(q) && pool.length) target = pool[pool.length - 1];
         else target = candidates[0];
@@ -687,8 +644,6 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
           let rawSheet = sheetResp.content[0].text.trim().replace(/```json|```/g, "").trim();
           sheet = JSON.parse(rawSheet);
         } catch {
-          // Fallback: armar la ficha desde la descripcion del catalogo,
-          // para NO caer al texto plano. Siempre sale la tarjeta.
           const d = target.description;
           const pick = (re) => { const m = d.match(re); return m ? m[0].trim() : ""; };
           const specs = [];
@@ -714,7 +669,6 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
           const sku = target.partNumber || target.model;
           const regularNum = parseFloat(target.regularPrice) || parseFloat(target.price) || 0;
           const offerNum   = parseFloat(target.price) || 0;
-          // guardar turno en memoria
           if (session) {
             session.history.push({ role: "user", content: query });
             session.history.push({ role: "assistant", content: `[ficha tecnica de ${target.title}]` });
@@ -737,43 +691,28 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
             items: [],
           });
         }
-        // si fallo el JSON, cae al follow-up normal abajo
       }
     }
 
-    // ── Deteccion de "eligio un modelo que ya vio" ───────────────────
-    // Si el cliente escribe el nombre de una laptop que YA le mostramos,
-    // no es una busqueda nueva: esta eligiendo. Lo tratamos como follow-up
-    // para confirmar su eleccion en vez de re-recomendar.
     let isModelPick = false;
     if (session && session.shownProducts.length) {
       const qNorm = q.replace(/[^a-z0-9]/g, "");
       isModelPick = session.shownProducts.some(p => {
         const model = (p.model || "").toLowerCase().replace(/[^a-z0-9]/g, "");
         const title = (p.title || "").toLowerCase();
-        // match por modelo (ej "fa506ncg") o por nombre comercial corto del titulo
         if (model && model.length >= 4 && qNorm.includes(model)) return true;
-        // match por nombre tipo "tuf gaming a15" presente en el titulo
         const qWords = q.split(/\s+/).filter(w => w.length > 2);
         const hit = qWords.filter(w => title.includes(w)).length;
         return qWords.length >= 2 && hit >= 2;
       });
     }
 
-    // ── Follow-up / conversacional (responde sin re-recomendar) ──────
-    // Va DESPUÉS de los redirects de asesor/servicio (para que escalen bien)
-    // y ANTES de searchProducts (para cortar el camino del producto).
     if (isFollowUp(q) || isModelPick) {
       const tFollow = Date.now();
-
-      // Contexto de memoria: que laptops ya vio el cliente, para que pueda
-      // responder "cual me conviene" / "la primera" refiriendose a modelos reales.
       const shown = session?.shownProducts || [];
       const shownList = shown.length
         ? `\nLaptops que el cliente YA vio en esta conversacion (puedes referirte a ellas por nombre):\n${shown.map((p, i) => `${i+1}. ${p.title} — ${p.specs || ""}`).join("\n")}`
         : "";
-
-      // Historial reciente para que la respuesta tenga continuidad.
       const histMsgs = session?.history?.slice(-MAGENTO_HISTORY_TURNS) || [];
 
       const followResp = await anthropic.messages.create({
@@ -800,7 +739,6 @@ REGLAS:
       const followText = (followResp.content[0]?.text || "").trim();
       console.log(`AnastasIA CO follow-up: ${Date.now() - tFollow}ms`);
 
-      // Guardar el turno en memoria.
       if (session) {
         session.history.push({ role: "user", content: query });
         session.history.push({ role: "assistant", content: followText });
@@ -810,14 +748,8 @@ REGLAS:
       return res.json({ message: followText, items: [] });
     }
 
-    // ── Search products ──────────────────────────────────────────────
-    // ── Contexto desde el PERFIL acumulado de la conversacion ─────────
-    // El perfil (session.profile) ya tiene los usos que el cliente ha pedido
-    // (gaming, universidad...) y su presupuesto, y persiste hasta que cambie.
-    // Asi, si pidio gaming+u y ahora refina, NO perdemos el gaming.
     const profile = session?.profile || { uses: [], budget: null };
 
-    // Enriquecer la busqueda con los usos del perfil que no esten ya en el query.
     let searchQuery = query;
     const queryLow = query.toLowerCase();
     const useKeyword = { gaming: "gaming", universidad: "universidad", trabajo: "trabajo", diseño: "diseño", portatil: "portatil" };
@@ -827,20 +759,14 @@ REGLAS:
         searchQuery += ` ${kw}`;
       }
     });
-    // Si el cliente dio un presupuesto antes y ahora no menciona ninguno, lo aplicamos.
     if (profile.budget && !extractBudget(queryLow)) {
       searchQuery += ` ${Math.round(profile.budget / 1000000)} millones`;
     }
 
-    // Gaming context viene del perfil: si "gaming" esta entre los usos activos,
-    // filtramos a gaming real (sin importar que tambien quiera u/trabajo).
     const gamingContext = profile.uses.includes("gaming");
 
     const relevant = searchProducts(searchQuery, gamingContext);
     if (relevant.length === 0) {
-      // Nada cabe: dejamos que Claude redacte el mensaje (natural y en tono de
-      // AnastasIA) en vez de un texto fijo. Le pasamos el presupuesto pedido y
-      // el precio mas bajo disponible para que oriente al cliente.
       const budget = extractBudget(query.toLowerCase());
       const cheapest = catalog.reduce((min, p) => {
         const pr = parseFloat(p.price) || 0;
@@ -866,9 +792,8 @@ Escribe un mensaje corto (2-3 frases) que:
         });
         msg = (r.content[0]?.text || "").trim();
       } catch {
-        msg = ""; // si Claude falla, abajo hay respaldo
+        msg = "";
       }
-      // Respaldo minimo solo si Claude no devolvio nada (no debe pasar seguido).
       if (!msg) {
         msg = budget
           ? `Parce, ahorita no tengo laptops en ese presupuesto${cheapestTxt ? `; las opciones arrancan alrededor de ${cheapestTxt}` : ""}. ¿Hasta cuánto podrías estirar?`
@@ -925,7 +850,6 @@ Escribe un mensaje corto (2-3 frases) que:
       }
     }
 
-    // ── User message by intent ───────────────────────────────────────
     const intentMap = {
       budget_spec: `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops economicas con esa especificacion, de menor a mayor precio. MESSAGE: frase corta y profesional en español neutro, sin jerga.`,
       budget:      `El cliente busca: "${query}". Encontramos ${productsToSend.length} laptops economicas de menor a mayor precio. MESSAGE: frase corta y profesional en español neutro, sin jerga.`,
@@ -936,14 +860,10 @@ Escribe un mensaje corto (2-3 frases) que:
     };
     const userMessage = intentMap[messageType];
 
-    // Si el cliente queria GAMING pero lo que cabe en su presupuesto NO es gaming,
-    // NO mostramos tarjetas de no-gaming (seria contradictorio). En vez de eso,
-    // Claude redacta un mensaje honesto y le preguntamos cuanto puede estirar.
     const wantedGaming = /(gaming|gamer|jugar|juego|fortnite|valorant|lol)/i.test(searchQuery);
     const sentGaming = productsToSend.some(p => /gaming|tuf|rog|strix|rtx|gtx/i.test(`${p.title} ${p.description}`));
     if (wantedGaming && !sentGaming) {
       const budget = extractBudget(q) || extractBudget(searchQuery.toLowerCase());
-      // precio de la gaming mas barata del catalogo, para orientar al cliente
       const cheapestGaming = catalog
         .filter(p => /gaming|tuf|rog|strix|rtx|gtx/i.test(`${p.title} ${p.description} ${p.category}`))
         .reduce((min, p) => { const pr = parseFloat(p.price) || 0; return (pr > 0 && pr < min) ? pr : min; }, Infinity);
@@ -977,8 +897,6 @@ Escribe un mensaje corto (2-3 frases) que:
       console.log(`🎮 Gaming sin opciones en presupuesto → mensaje honesto, sin tarjetas`);
       return res.json({ message: gMsg, items: [] });
     }
-    // Si el perfil acumulo varios usos (ej. universidad + gaming), se lo decimos
-    // a Claude para que el "ideal_para" refleje TODOS, no solo el ultimo pedido.
     const useLabel = { gaming: "gaming", universidad: "universidad", trabajo: "trabajo", diseño: "diseño", portatil: "portabilidad" };
     const profileUses = (session?.profile?.uses || []).map(u => useLabel[u] || u);
     const usesNote = profileUses.length > 1
@@ -986,21 +904,16 @@ Escribe un mensaje corto (2-3 frases) que:
       : "";
     const userMessageFinal = userMessage + usesNote;
 
-    // Contexto de memoria: si ya mostramos laptops antes, decirle a Claude
-    // cuales fueron para que el "message" no repita ni ignore lo anterior
-    // (ej. el cliente pidio "mas barata" -> Claude sabe respecto a que).
     const priorContext = (session && session.shownProducts.length)
       ? `\nCONTEXTO: antes en esta conversacion ya le mostramos estas laptops: ${session.shownProducts.map(p => p.title).join("; ")}. Las de ahora son una nueva seleccion segun lo que acaba de pedir; en el "message" no las repitas como si fueran nuevas marcas, conecta de forma natural con lo que pidio.`
       : "";
 
-    // ── Build product list — only what Claude needs ──────────────────
     const productList = productsToSend.map((p, i) => {
       const promo = calcPromo(p.regularPrice, p.price);
       const promoHint = promo ? `PROMO_CALCULADO: ${promo}` : `PROMO_CALCULADO: none`;
       return `${i+1}. ${p.title} | Precio oferta: ${p.price} | Precio regular: ${p.regularPrice} | Modelo: ${p.model} | Descripcion: ${p.description.replace(/"/g, "'")} | ${promoHint}`;
     }).join("\n");
 
-    // ── Claude call — JSON enriquecido por item ──────────────────────
     const tClaude = Date.now();
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
@@ -1032,7 +945,6 @@ REGLAS (sin comillas dobles en ningun valor de texto):
     });
     console.log(`⏱️ Claude API: ${Date.now() - tClaude}ms`);
 
-    // ── Parse JSON ───────────────────────────────────────────────────
     const raw = response.content[0].text.trim().replace(/```json|```/g, "").trim();
     let result;
     try {
@@ -1045,13 +957,8 @@ REGLAS (sin comillas dobles en ningun valor de texto):
       } else { throw parseErr; }
     }
 
-    // ── Merge Claude output with catalog data ────────────────────────
     const claudeItems = Array.isArray(result.items) ? result.items : [];
 
-    // Si Claude no devolvio exactamente un item por producto, su orden NO es
-    // confiable: pegar title/specs por indice mezclaria un producto con otro
-    // (ej. titulo de laptop sobre URL de un case). En ese caso ignoramos el
-    // texto de Claude y usamos los datos del propio producto del catalogo.
     const aligned = claudeItems.length === productsToSend.length;
     if (!aligned) console.log(`⚠️ Claude devolvio ${claudeItems.length} items vs ${productsToSend.length} productos — usando datos del catalogo`);
 
@@ -1061,7 +968,6 @@ REGLAS (sin comillas dobles en ningun valor de texto):
       const regularNum = parseFloat(p.regularPrice) || parseFloat(p.price) || 0;
       const offerNum   = parseFloat(p.price) || 0;
       const clean = (s) => (s ? String(s).replace(/"/g, "'").trim() : "");
-      // SPECS unificado (compat con cualquier render viejo) a partir de los campos.
       const specsJoined = [ci.cpu, ci.ram, ci.ssd, ci.pantalla].filter(Boolean).join(" | ")
         || p.description.slice(0, 90);
       return {
@@ -1089,7 +995,6 @@ REGLAS (sin comillas dobles en ningun valor de texto):
 
     console.log(`✅ AnastasIA CO devuelve ${mergedItems.length} productos · Total: ${Date.now() - tStart}ms`);
 
-    // ── Guardar en memoria: productos mostrados + turno de conversacion ──
     if (session) {
       session.shownProducts = mergedItems.map(it => ({
         title: it.TITLE, model: (productsToSend.find(p => p.title === it.TITLE)?.model) || "",
@@ -1117,7 +1022,6 @@ REGLAS (sin comillas dobles en ningun valor de texto):
         PROMO: calcPromo(p.regularPrice, p.price) || "Visita nuestra tienda ASUS Colombia",
       };
     });
-    // error_flag avisa al frontend que esto fue un fallback (para trackear).
     return res.json({ items: fallback, error_flag: true, error_msg: String(err.message || "").slice(0, 200) });
   }
 });
