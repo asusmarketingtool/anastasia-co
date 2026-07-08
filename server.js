@@ -418,7 +418,7 @@ function trackEvent(fields, tab, source) {
       __tab: tab,
       country: "CO",
       event: "query",
-      source: source,
+      channel: source,
       ...fields,
     });
     fetch(`${CONFIG.TRACK_URL}?${params.toString()}`)
@@ -454,6 +454,7 @@ app.post("/webhook/freshchat", async (req, res) => {
     console.log(`[${conversationId}] Claude: ${reply.slice(0, 80)}...`);
     trackFreshchat({
       session_id: conversationId,
+      message_type: "webhook",
       query: userMessage.slice(0, 500),
       bot_message: reply.slice(0, 500),
     });
@@ -477,6 +478,12 @@ app.get("/anastasia", async (req, res) => {
   const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
   const sessionId = req.query.session || req.query.session_id || "";
   const session = getSession(sessionId);
+  // Freshchat (Freshworks) tambien llama GET /anastasia (solo ?q=), SIN session.
+  // La pagina Magento siempre manda session= → ese es el discriminador de canal.
+  // Trafico Magento NO se trackea aqui: la pagina ya lo trackea completa
+  // client-side a la pestaña Events (chips, clicks, CSAT, UTMs, errores).
+  // Trackear aqui tambien lo duplicaria. Solo Freshchat se loguea del server.
+  const trackWeb = (fields) => { if (!sessionId) trackFreshchat(fields); };
   updateProfile(session, query);
   console.log(`AnastasIA CO consulta: "${query}"${sessionId ? ` [${sessionId}]` : ""}`);
   if (!query) return res.json({ items: [] });
@@ -685,8 +692,9 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
             session.history.push({ role: "assistant", content: `[ficha tecnica de ${target.title}]` });
             if (session.history.length > MAGENTO_HISTORY_TURNS * 2) session.history = session.history.slice(-MAGENTO_HISTORY_TURNS * 2);
           }
-          trackMagento({
+          trackWeb({
             session_id: sessionId || ip,
+            message_type: "spec_sheet",
             query: query.slice(0, 500),
             bot_message: `[ficha tecnica: ${target.title}]`.slice(0, 500),
             products_count: 1,
@@ -762,8 +770,9 @@ REGLAS:
         if (session.history.length > MAGENTO_HISTORY_TURNS * 2) session.history = session.history.slice(-MAGENTO_HISTORY_TURNS * 2);
       }
 
-      trackMagento({
+      trackWeb({
         session_id: sessionId || ip,
+        message_type: "follow_up",
         query: query.slice(0, 500),
         bot_message: followText.slice(0, 500),
       });
@@ -826,8 +835,9 @@ Escribe un mensaje corto (2-3 frases) que:
         session.history.push({ role: "user", content: query });
         session.history.push({ role: "assistant", content: msg });
       }
-      trackMagento({
+      trackWeb({
         session_id: sessionId || ip,
+        message_type: "no_stock",
         query: query.slice(0, 500),
         bot_message: msg.slice(0, 500),
         products_count: 0,
@@ -924,8 +934,9 @@ Escribe un mensaje corto (2-3 frases) que:
         session.history.push({ role: "assistant", content: gMsg });
       }
       console.log(`🎮 Gaming sin opciones en presupuesto → mensaje honesto, sin tarjetas`);
-      trackMagento({
+      trackWeb({
         session_id: sessionId || ip,
+        message_type: "gaming_no_budget",
         query: query.slice(0, 500),
         bot_message: gMsg.slice(0, 500),
         products_count: 0,
@@ -1030,8 +1041,9 @@ REGLAS (sin comillas dobles en ningun valor de texto):
 
     console.log(`✅ AnastasIA CO devuelve ${mergedItems.length} productos · Total: ${Date.now() - tStart}ms`);
 
-    trackMagento({
+    trackWeb({
       session_id: sessionId || ip,
+      message_type: "cards",
       query: query.slice(0, 500),
       bot_message: (result.message || "").slice(0, 500),
       products_shown: mergedItems.map(it => it.TITLE).join(" | ").slice(0, 500),
