@@ -27,9 +27,10 @@ const CONFIG = {
   RATE_LIMIT_MAX: 40,
   RATE_LIMIT_WINDOW_MS: 60 * 60 * 1000,
   MAX_QUERY_LENGTH: 300,
-  // ── Tracking a Google Sheets (pestaña Freshchat) ──
+  // ── Tracking a Google Sheets ──
   TRACK_URL: process.env.TRACK_URL || "https://script.google.com/macros/s/AKfycbxp-9dO08nvUk0SRuSYh6Bx86hPS1mZ3iCdBM5trcVAX7YvlKwDtwO7WrUgmXjaqJOT_A/exec",
-  TRACK_TAB: "Freshchat",
+  TRACK_TAB: "Freshchat",        // webhook Freshchat
+  TRACK_TAB_MAGENTO: "Magento",  // pagina AnastasIA en Magento (GET /anastasia)
 };
 
 let catalog = [];
@@ -406,25 +407,35 @@ async function replyOnFreshchat(conversationId, actorId, text) {
   if (!res.ok) throw new Error(`Freshchat API error ${res.status}: ${await res.text()}`);
 }
 
-// ── Log de Freshchat a Google Sheets (pestaña separada vía __tab) ────
-// Reusa el mismo collector GAS que Magento, pero con __tab=Freshchat para
-// que caiga en su propia pestaña. Fire-and-forget: no bloquea ni rompe el
-// webhook si el sheet falla. GET con texto recortado (límite de URL).
-function trackFreshchat(fields) {
+// ── Log a Google Sheets (pestaña separada vía __tab) ─────────────────
+// Mismo collector GAS para ambos canales, pero cada canal cae en su
+// propia pestaña con su propio source. Fire-and-forget: no bloquea ni
+// rompe el flujo si el sheet falla. GET con texto recortado (límite URL).
+function trackEvent(fields, tab, source) {
   if (!CONFIG.TRACK_URL) return;
   try {
     const params = new URLSearchParams({
-      __tab: CONFIG.TRACK_TAB,
+      __tab: tab,
       country: "CO",
       event: "query",
-      source: "freshchat",
+      source: source,
       ...fields,
     });
     fetch(`${CONFIG.TRACK_URL}?${params.toString()}`)
-      .catch(err => console.error("⚠️ track Freshchat falló:", err.message));
+      .catch(err => console.error(`⚠️ track ${tab} falló:`, err.message));
   } catch (e) {
-    console.error("⚠️ track Freshchat error:", e.message);
+    console.error(`⚠️ track ${tab} error:`, e.message);
   }
+}
+
+// Webhook de Freshchat → pestaña Freshchat
+function trackFreshchat(fields) {
+  trackEvent(fields, CONFIG.TRACK_TAB, "freshchat");
+}
+
+// Pagina AnastasIA en Magento (GET /anastasia) → pestaña Magento
+function trackMagento(fields) {
+  trackEvent(fields, CONFIG.TRACK_TAB_MAGENTO, "magento");
 }
 
 app.post("/webhook/freshchat", async (req, res) => {
@@ -674,6 +685,12 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
             session.history.push({ role: "assistant", content: `[ficha tecnica de ${target.title}]` });
             if (session.history.length > MAGENTO_HISTORY_TURNS * 2) session.history = session.history.slice(-MAGENTO_HISTORY_TURNS * 2);
           }
+          trackMagento({
+            session_id: sessionId || ip,
+            query: query.slice(0, 500),
+            bot_message: `[ficha tecnica: ${target.title}]`.slice(0, 500),
+            products_count: 1,
+          });
           return res.json({
             message: sheet.intro || `Esta es la ficha de ${target.title}:`,
             specSheet: {
@@ -745,7 +762,7 @@ REGLAS:
         if (session.history.length > MAGENTO_HISTORY_TURNS * 2) session.history = session.history.slice(-MAGENTO_HISTORY_TURNS * 2);
       }
 
-      trackFreshchat({
+      trackMagento({
         session_id: sessionId || ip,
         query: query.slice(0, 500),
         bot_message: followText.slice(0, 500),
@@ -809,7 +826,7 @@ Escribe un mensaje corto (2-3 frases) que:
         session.history.push({ role: "user", content: query });
         session.history.push({ role: "assistant", content: msg });
       }
-      trackFreshchat({
+      trackMagento({
         session_id: sessionId || ip,
         query: query.slice(0, 500),
         bot_message: msg.slice(0, 500),
@@ -907,7 +924,7 @@ Escribe un mensaje corto (2-3 frases) que:
         session.history.push({ role: "assistant", content: gMsg });
       }
       console.log(`🎮 Gaming sin opciones en presupuesto → mensaje honesto, sin tarjetas`);
-      trackFreshchat({
+      trackMagento({
         session_id: sessionId || ip,
         query: query.slice(0, 500),
         bot_message: gMsg.slice(0, 500),
@@ -1013,7 +1030,7 @@ REGLAS (sin comillas dobles en ningun valor de texto):
 
     console.log(`✅ AnastasIA CO devuelve ${mergedItems.length} productos · Total: ${Date.now() - tStart}ms`);
 
-    trackFreshchat({
+    trackMagento({
       session_id: sessionId || ip,
       query: query.slice(0, 500),
       bot_message: (result.message || "").slice(0, 500),
