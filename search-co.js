@@ -1,0 +1,254 @@
+// search-co.js — capa de intencion + seleccion de productos para AnastasIA CO.
+// Unico lugar que decide QUE 3 laptops ve el cliente. server.js solo redacta.
+//
+// Reglas duras:
+//   1. Lo ultimo que dice el cliente sobre su USO manda (reemplaza, no acumula).
+//   2. Las palabras de precio cambian el ORDEN, nunca el uso.
+//   3. Los superlativos ("la mas X") se resuelven sobre TODO el catalogo elegible.
+//   4. Si el cliente pide un spec que no existe en tienda, se reporta en `unmet`
+//      para que el prompt lo diga con honestidad en vez de inventarlo.
+
+// ── Tokenizacion ─────────────────────────────────────────────────────
+// El bug original: text.includes("top") daba match dentro de "lapTOP", y
+// includes("el") dentro de "IntEL". Todo puntuaba igual y el ranking era ruido.
+const STOP_ES = new Set([
+  "cual","cuál","cuales","cuáles","que","qué","como","cómo","donde","dónde","es","son","esta","este",
+  "el","la","los","las","un","una","unos","unas","del","para","con","sin","por","pero","mas","más",
+  "muy","hay","tengo","tiene","tienen","quiero","busco","necesito","dame","dime","ver","muestra",
+  "mostrar","recomienda","recomiendame","equipo","equipos","laptop","laptops","portatil","portátil",
+  "notebook","computador","computadora","pc","asus","favor","gracias","hola","buenas","parce","ome",
+  "marica","hermano","señor","señora","algo","cosa","tipo","seria","sería","estaria","estaría",
+]);
+
+const esc = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const B = "[^a-z0-9áéíóúñ]";
+export const hasTok = (text, w) =>
+  new RegExp(`(^|${B})${esc(w.toLowerCase())}(${B}|$)`, "i").test(text);
+export const hasAny = (text, list) =>
+  list.some(w => (w.includes(" ") ? ` ${text.toLowerCase()} `.includes(w.toLowerCase()) : hasTok(text, w)));
+
+export function tokenize(q) {
+  return q.toLowerCase().split(/\s+/)
+    .map(w => w.replace(/[¿?¡!.,;:()"'*]/g, ""))
+    .filter(w => w.length > 2 && !STOP_ES.has(w));
+}
+
+// ── Presupuesto COP ──────────────────────────────────────────────────
+// En Colombia una "luca" son mil pesos, NO un millon. El parser viejo leia
+// "500 lucas" como $500.000.000 y por eso el filtro no devolvia nada.
+const UNITS = { millon: 1e6, millones: 1e6, "millón": 1e6, palo: 1e6, palos: 1e6, luca: 1e3, lucas: 1e3, mil: 1e3 };
+const BUDGET_FLOOR = 500000;
+
+export function extractBudget(text) {
+  const q = text.toLowerCase().replace(/\s+/g, " ");
+  const m = q.match(new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*(${Object.keys(UNITS).join("|")})\\b`));
+  if (m) {
+    const n = Math.round(parseFloat(m[1].replace(",", ".")) * UNITS[m[2]]);
+    return n >= BUDGET_FLOOR ? n : null;
+  }
+  const n2 = q.match(/(\d[\d.,]{5,})/);
+  if (n2) {
+    const n = parseInt(n2[1].replace(/[.,]/g, ""), 10);
+    if (n >= BUDGET_FLOOR) return n;
+  }
+  return null;
+}
+
+// ── Intencion ────────────────────────────────────────────────────────
+export const USE_PATTERNS = {
+  gaming:       /(gaming|gamer|jugar|juego|juegos|videojuego|fortnite|valorant|\blol\b|\bgta\b|warzone|\bcod\b|minecraft|dota|csgo|fifa|\bea fc\b)/i,
+  universidad:  /(universidad|\bla u\b|\buni\b|estudiar|estudio|estudiante|carrera|tesis|colegio|clases|programar|programaci[oó]n|ingenier[ií]a)/i,
+  trabajo:      /(trabajo|trabajar|oficina|ofim[aá]tica|excel|contabilidad|negocio|empresa|teletrabajo|home office|facturaci[oó]n)/i,
+  diseno:       /(dise[nñ]o|dise[nñ]ar|autocad|solidworks|revit|render|\b3d\b|edici[oó]n de video|editar video|photoshop|illustrator|premiere|arquitectura|fotograf)/i,
+  portabilidad: /(liviana|liviano|ligera|ligero|delgada|ultraligera|para llevar|llevarla|llevarlo|de viaje|viajo)/i,
+};
+
+const CHANGE = /(en realidad|realmente|mejor|ya no|cambi[eé]|cambio de idea|olvida|olv[ií]date|en vez de|m[aá]s bien|pensandolo bien|pens[aá]ndolo bien|la verdad|no es para|no ser[aá] para)/i;
+const ADD    = /(tambi[eé]n|adem[aá]s|aparte|de paso|igual quiero|igual me sirve|y de paso|y para)/i;
+const RESET  = /(empecemos de nuevo|empieza de nuevo|desde cero|olvida todo|borra todo|reinicia|otra cosa totalmente)/i;
+const NEG    = /(\bno\b|\bnada de\b|\bsin\b|\bnunca\b|\btampoco\b|\bya no\b)/i;
+
+export const CHEAPER = /(m[aá]s barat|m[aá]s econ[oó]mic|menos costos|precio m[aá]s bajo|menor precio|no tan car|muy car|se me pasa|econ[oó]mic)/i;
+export const PRICIER = /(m[aá]s potente|m[aá]s poderos|la mejor|el mejor|lo mejor|gama m[aá]s alta|tope de gama|top gama|gama alta|m[aá]s berrac|m[aá]s top|mayor rendimiento)/i;
+
+export const newIntent = () => ({ uses: [], budget: null, cpu: null, gpu: null, ram: null, turn: 0 });
+
+export function updateIntent(state, message) {
+  const st = state || newIntent();
+  st.turn++;
+  const msg = (message || "").toLowerCase();
+  if (RESET.test(msg)) { const f = newIntent(); f.turn = st.turn; return f; }
+
+  // Clausulas: la negacion aplica solo a su pedazo de la frase.
+  const clauses = msg.split(/[,.;]|\bpero\b|\baunque\b|\bsino\b/).map(c => c.trim()).filter(Boolean);
+  const mentioned = new Set(), negated = new Set();
+  for (const c of clauses) {
+    const uses = Object.entries(USE_PATTERNS).filter(([, re]) => re.test(c)).map(([u]) => u);
+    if (!uses.length) continue;
+    const target = NEG.test(c) ? negated : mentioned;
+    uses.forEach(u => target.add(u));
+  }
+  if (mentioned.size) {
+    if (ADD.test(msg) && !CHANGE.test(msg)) mentioned.forEach(u => { if (!st.uses.includes(u)) st.uses.push(u); });
+    else st.uses = [...mentioned];                       // ← lo ultimo manda
+  }
+  if (negated.size) st.uses = st.uses.filter(u => !negated.has(u));
+
+  const b = extractBudget(msg);
+  if (b) st.budget = b;
+
+  if (CHANGE.test(msg)) { st.cpu = null; st.gpu = null; st.ram = null; }
+
+  const cpu = msg.match(/\bi[3579]\b/) || msg.match(/\bryzen\s*[3579]\b/) || msg.match(/\bcore ultra\s*[579]\b/);
+  if (cpu) st.cpu = cpu[0].replace(/\s+/g, " ").trim();
+  const gpu = msg.match(/\b(rtx|gtx)\s*(\d{3,4})\b/);
+  if (gpu) st.gpu = `${gpu[1]}${gpu[2]}`.toLowerCase();
+  const ram = msg.match(/\b(\d{1,2})\s*gb\b/);
+  if (ram) st.ram = `${ram[1]}gb`;
+  return st;
+}
+
+export function sortDirection(message) {
+  const m = (message || "").toLowerCase();
+  if (CHEAPER.test(m)) return "asc";
+  if (PRICIER.test(m)) return "desc";
+  return null;
+}
+
+// ── Clasificacion de producto ────────────────────────────────────────
+const txt = (p) => `${p.title} ${p.description} ${p.category || ""} ${p.model || ""}`.toLowerCase();
+
+export function isGamingProduct(p) {
+  const t = txt(p);
+  if (/integrad|intel graphics|intel hd|iris xe|adreno|radeon graphics/.test(t)) {
+    return /\brtx\s*\d{3,4}|\bgtx\s*\d{3,4}/.test(t);
+  }
+  return /gaming|\btuf\b|\brog\b|strix|\brtx\b|\bgtx\b|nitro/.test(t);
+}
+
+// "La mas potente" no es "la mas cara". Se ordena por hardware real.
+export function powerScore(p) {
+  const t = txt(p);
+  let s = 0;
+  const g = t.match(/\b(rtx|gtx)\s*(\d{4})\b/);
+  if (g) s += parseInt(g[2].slice(2), 10) + parseInt(g[2][0], 10) * 2;  // 5060 → 60+10; 5050 → 50+10
+  else if (/arc|iris xe|radeon graphics|integrad/.test(t)) s += 5;
+  if (/\b(i9|ryzen 9|core ultra 9|core 9[\s-]?\d)/.test(t)) s += 18;
+  else if (/\b(i7|ryzen 7|core ultra 7|core 7[\s-]?\d)/.test(t)) s += 12;
+  else if (/\b(i5|ryzen 5|core ultra 5|core 5[\s-]?\d)/.test(t)) s += 7;
+  const ram = t.match(/\b(\d{2})\s*gb\b/);
+  if (ram) s += Math.min(parseInt(ram[1], 10) / 4, 8);
+  return s;
+}
+
+// Señales ponderadas: una RTX suma poco para diseño y mucho para gaming.
+// Con un peso plano, cualquier TUF empataba con la ProArt en "diseño".
+const AFFINITY = {
+  gaming:       [[/\brog\b|strix|zephyrus/i, 9], [/\btuf\b|gaming/i, 7], [/\brtx\b|\bgtx\b/i, 6],
+                 [/144\s*hz|165\s*hz|240\s*hz/i, 3], [/integrad|iris xe|radeon graphics|intel arc/i, -12]],
+  universidad:  [[/vivobook/i, 5], [/expertbook|zenbook/i, 3], [/\bi5\b|ryzen 5/i, 3], [/\b14\b|\b15\.6\b/i, 2], [/\b17\b/i, -4]],
+  trabajo:      [[/expertbook/i, 9], [/windows 11 pro/i, 5], [/huella|fingerprint/i, 4], [/vivobook|zenbook/i, 3]],
+  diseno:       [[/proart/i, 12], [/\boled\b/i, 6], [/pantone|dci-p3|calman/i, 5], [/3\.2k|\b3k\b|2\.8k|\bqhd\b/i, 4],
+                 [/\b32\s*gb\b/i, 3], [/\brtx\b/i, 2]],
+  portabilidad: [[/zenbook|vivobook go/i, 7], [/1\.[0-4]\s*kg/i, 6], [/liviana|delgada/i, 4], [/\b13\b|\b14\b/i, 3],
+                 [/\b17\b|gaming/i, -6]],
+};
+
+const price = (p) => parseFloat(p.price) || 0;
+
+// Reparte n opciones a lo largo del rango de precio de la lista corta.
+function priceLadder(list, n) {
+  const byPrice = [...list].sort((a, b) => price(a) - price(b));
+  if (byPrice.length <= n) return byPrice;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const p = byPrice[Math.round((i * (byPrice.length - 1)) / (n - 1))];
+    if (!out.includes(p)) out.push(p);
+  }
+  for (const p of byPrice) { if (out.length >= n) break; if (!out.includes(p)) out.push(p); }
+  return out.sort((a, b) => price(a) - price(b));
+}
+
+function keywordScore(p, words) {
+  const t = `${txt(p)} ${p.link || ""}`;
+  return words.reduce((a, w) => a + (hasTok(t, w) ? 5 : 0), 0);
+}
+
+function affinityScore(p, uses) {
+  const t = txt(p);
+  let s = 0;
+  for (const u of uses) {
+    for (const [re, w] of (AFFINITY[u] || [])) if (re.test(t)) s += w;
+  }
+  return s;
+}
+
+// ── Seleccion ────────────────────────────────────────────────────────
+// Devuelve { products, mode, budget, unmet }.
+//   mode: "ok" | "empty" | "gaming_over_budget"
+//   unmet: specs que el cliente pidio y NINGUN producto devuelto cumple.
+export function selectProducts(catalog, query, intent, n = 3) {
+  const q = (query || "").toLowerCase();
+  const it = intent || newIntent();
+  const words = tokenize(q);
+  const dir = sortDirection(q);
+
+  let pool = catalog.filter(p => price(p) > 0);
+  const wantsGaming = it.uses.includes("gaming");
+  if (wantsGaming) pool = pool.filter(isGamingProduct);
+  if (!pool.length) return { products: [], mode: "empty", budget: it.budget, unmet: [] };
+
+  // Presupuesto: techo duro.
+  if (it.budget) {
+    const within = pool.filter(p => price(p) <= it.budget);
+    if (!within.length) {
+      const anyWithin = catalog.some(p => price(p) > 0 && price(p) <= it.budget);
+      return {
+        products: [],
+        mode: wantsGaming && anyWithin ? "gaming_over_budget" : "empty",
+        budget: it.budget,
+        cheapestEligible: Math.min(...pool.map(price)),
+        unmet: [],
+      };
+    }
+    pool = within;
+  }
+
+  // Specs pedidos: filtro duro solo si existe algo que los cumpla.
+  const unmet = [];
+  for (const [key, val] of [["cpu", it.cpu], ["gpu", it.gpu], ["ram", it.ram]]) {
+    if (!val) continue;
+    const needle = val.replace(/\s+/g, "");
+    const hit = pool.filter(p => txt(p).replace(/\s+/g, "").includes(needle));
+    if (hit.length) pool = hit; else unmet.push(val);
+  }
+
+  // Orden.
+  let ranked;
+  if (dir === "asc") {
+    ranked = [...pool].sort((a, b) => price(a) - price(b));
+  } else if (dir === "desc") {
+    ranked = [...pool].sort((a, b) => powerScore(b) - powerScore(a) || price(b) - price(a));
+  } else {
+    // Sin superlativo y sin spec puntual: escalera de precio (buena / mejor / tope)
+    // dentro de lo que encaja con la intencion. Evita abrir siempre con lo mas caro
+    // (afinidad sola) o siempre con lo mas barato (precio solo).
+    const scored = [...pool]
+      .map(p => ({ p, s: keywordScore(p, words) + affinityScore(p, it.uses) }))
+      .sort((a, b) => b.s - a.s || price(a) - price(b));
+    // Banda de afinidad: solo compiten los que estan cerca del mejor puntaje.
+    // Sin esto la escalera metia una ProArt en una consulta de gaming solo
+    // porque su precio caia en el escalon del medio.
+    const maxS = scored.length ? scored[0].s : 0;
+    const band = maxS > 0 ? scored.filter(r => r.s >= maxS / 2) : scored;
+    let base = band.slice(0, 8).map(r => r.p);
+    if (base.length < n) {                       // completar SIN perder el orden por afinidad
+      for (const r of scored) { if (base.length >= n) break; if (!base.includes(r.p)) base.push(r.p); }
+    }
+    ranked = priceLadder(base, n);
+  }
+  // orderedBy le dice al prompt que puede afirmar. En el pantallazo el bot decia
+  // "ordenadas de mayor a menor rendimiento" mientras ordenaba por precio.
+  const orderedBy = dir === "asc" ? "precio_asc" : dir === "desc" ? "rendimiento_desc" : "afinidad";
+  return { products: ranked.slice(0, n), mode: "ok", budget: it.budget, unmet, orderedBy };
+}
