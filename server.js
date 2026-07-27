@@ -155,6 +155,20 @@ function isFollowUp(q) {
   return hasWord(q, followUpWords);
 }
 
+// Preguntas sobre specs de una laptop que el cliente YA vio o eligio.
+// Antes caian en busqueda nueva y devolvian 3 productos sin relacion.
+const specQuestionWords = [
+  "cuanta ram","cuánta ram","que ram","qué ram","cuanta memoria","cuánta memoria",
+  "memoria trae","cuanto almacenamiento","cuánto almacenamiento","que disco","qué disco",
+  "cuanto ssd","cuánto ssd","que procesador","qué procesador","que cpu","qué cpu",
+  "que tarjeta","qué tarjeta","que grafica","qué gráfica","que gpu","qué gpu",
+  "cuantas pulgadas","cuántas pulgadas","que pantalla","qué pantalla","que resolucion","qué resolución",
+  "tiene teclado","teclado en español","teclado retroiluminado","cuanto pesa","cuánto pesa",
+  "que bateria","qué batería","que trae","qué trae","que incluye","qué incluye","viene con",
+  "que sistema operativo","qué sistema operativo","tiene windows","es ampliable","se puede ampliar",
+];
+function isSpecQuestion(q) { return hasWord(q, specQuestionWords); }
+
 function formatCOP(amount) {
   return `$${Math.round(amount).toLocaleString("es-CO")}`;
 }
@@ -597,9 +611,15 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
       });
     }
 
-    if (isFollowUp(q) || isModelPick) {
+    const specQuestion = isSpecQuestion(q) && (session?.selectedProduct || session?.shownProducts?.length);
+
+    if (isFollowUp(q) || isModelPick || specQuestion) {
       const tFollow = Date.now();
       const shown = session?.shownProducts || [];
+      const picked = session?.selectedProduct;
+      const pickedLine = picked
+        ? `\nEl cliente YA ELIGIO esta laptop: ${picked.title} — ${picked.specs || ""}. Si pregunta por un spec de ella (RAM, procesador, disco, pantalla, grafica, teclado), respondele con el valor exacto de esa ficha. Si el dato NO aparece ahi, dilo con honestidad y ofrece que un asesor lo confirme. NO muestres otras laptops.`
+        : "";
       const shownList = shown.length
         ? `\nLaptops que el cliente YA vio en esta conversacion (puedes referirte a ellas por nombre):\n${shown.map((p, i) => `${i+1}. ${p.title} — ${p.specs || ""}`).join("\n")}`
         : "";
@@ -609,7 +629,7 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
         model: "claude-haiku-4-5-20251001",
         max_tokens: 250,
         system: `Eres AnastasIA, asesora de laptops ASUS Colombia. Entiendes la jerga colombiana si el cliente la usa, pero TU respondes en español claro y profesional, sin jerga ni modismos.
-El cliente ya vio recomendaciones de laptops y ahora hace una pregunta de seguimiento (envío, garantía, pago, o cuál elegir).${shownList}
+El cliente ya vio recomendaciones de laptops y ahora hace una pregunta de seguimiento (envío, garantía, pago, o cuál elegir).${pickedLine}${shownList}
 REGLAS:
 - Responde SOLO la pregunta, en 1-2 frases cortas, español neutro y profesional, sin jerga.
 - NO listes tarjetas de producto nuevas. Si el cliente pregunta cual le conviene o elige una de las que vio, puedes mencionarla POR NOMBRE (de la lista de arriba) y dar un criterio breve, pero sin reabrir busqueda.
@@ -630,6 +650,14 @@ REGLAS:
       console.log(`AnastasIA CO follow-up: ${Date.now() - tFollow}ms`);
 
       if (session) {
+        if (isModelPick && !specQuestion) {
+          const hit = shown.find(p => {
+            const m = (p.model || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+            return (m.length >= 4 && q.replace(/[^a-z0-9]/g, "").includes(m)) ||
+                   q.split(/\s+/).filter(w => w.length > 2 && p.title.toLowerCase().includes(w)).length >= 2;
+          });
+          if (hit) session.selectedProduct = hit;
+        }
         session.history.push({ role: "user", content: query });
         session.history.push({ role: "assistant", content: followText });
         if (session.history.length > MAGENTO_HISTORY_TURNS * 2) session.history = session.history.slice(-MAGENTO_HISTORY_TURNS * 2);
@@ -645,6 +673,8 @@ REGLAS:
       return res.json({ message: followText, items: [] });
     }
 
+    // Si el cliente nombro un modelo en un mensaje anterior y ahora lo confirma,
+    // isModelPick ya lo resolvio arriba. Aqui solo seguimos con la seleccion.
     // ── SELECCION DE PRODUCTOS ────────────────────────────────────────
     // Todo el ranking vive en search-co.js. Aqui solo se redacta.
     const sel = selectProducts(catalog, query, intent, 3);
@@ -739,9 +769,16 @@ Escribe un mensaje corto (2-3 frases) que:
 
     const productsToSend = sel.products;
 
+    // Modelo nombrado: queda registrado como "la elegida" para los seguimientos.
+    if (sel.exactModel && productsToSend.length === 1 && session) {
+      const p = productsToSend[0];
+      session.selectedProduct = { title: p.title, model: p.model, specs: p.description };
+    }
+
     // El tipo de mensaje sale del orden REAL que se aplico, no de adivinar.
     const messageType =
       sel.orderedBy === "precio_asc"       ? "budget" :
+      sel.orderedBy === "modelo"           ? "named"  :
       sel.orderedBy === "rendimiento_desc" ? "power"  :
       (intent.cpu || intent.gpu || intent.ram) ? "spec" : "normal";
 
@@ -749,6 +786,7 @@ Escribe un mensaje corto (2-3 frases) que:
       budget: `El cliente busca: "${query}". Le mostramos ${productsToSend.length} opciones ordenadas de MENOR a MAYOR precio; la primera es la mas economica de la tienda que encaja con lo que pidio. MESSAGE: frase corta y profesional en español neutro, sin jerga.`,
       power:  `El cliente busca: "${query}". Le mostramos ${productsToSend.length} opciones ordenadas de MAYOR a MENOR rendimiento real (tarjeta grafica y procesador, no precio). MESSAGE: frase corta y profesional en español neutro, sin jerga.`,
       spec:   `El cliente busca: "${query}". Le mostramos ${productsToSend.length} laptops que cumplen la especificacion que pidio. MESSAGE: frase corta y profesional en español neutro, sin jerga.`,
+      named:  `El cliente pregunto por un modelo especifico y SI lo tenemos disponible.${isSpecQuestion(q) ? ` ADEMAS hizo una pregunta puntual sobre sus especificaciones. RESPONDE ESA PREGUNTA PRIMERO, con el dato exacto que aparece en la descripcion del producto (ej: "Trae 64GB LPDDR5X"). Si ese dato NO aparece en la descripcion, dilo con honestidad y sugiere confirmarlo con un asesor. Despues de responder, una sola frase de por que es buena opcion.` : ` MESSAGE: confirma que esta disponible en la tienda y di en una frase por que es buena opcion y para que usos brilla segun sus specs reales.`} NO ofrezcas alternativas ni la compares con otras: el cliente ya sabe cual quiere. NUNCA digas que le estas mostrando varias opciones: solo hay una tarjeta. Frase corta, profesional, sin jerga.`,
       normal: `El cliente busca: "${query}". Le mostramos ${productsToSend.length} opciones que encajan con lo que pidio, de menor a mayor precio, para que compare. MESSAGE: frase corta y profesional en español neutro, sin jerga.`,
     };
     let userMessage = intentMap[messageType];
