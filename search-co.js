@@ -183,6 +183,41 @@ function affinityScore(p, uses) {
   return s;
 }
 
+// ── Modelo nombrado ──────────────────────────────────────────────────
+// Si el cliente escribe un SKU o el nombre de una linea puntual, ESE es el
+// resultado. No se diluye con alternativas ni pasa por la escalera de precio.
+const GENERICO = new Set([
+  "asus","portatil","portátil","laptop","notebook","computador","computadora","gaming","gamer",
+  "intel","amd","ryzen","core","ultra","rtx","gtx","geforce","nvidia","radeon","ssd","ram","oled",
+  "fhd","qhd","pulgadas","pulgada","rog","tuf","quiero","dije","esta","este","para","con","que",
+  "los","las","del","una","uno","interesada","interesado","estoy","busco","necesito","mostrar",
+  "ver","precio","tienda","serie","modelo","2024","2025","2026","gama",
+]);
+
+export function findNamedModel(catalog, query, max = 3) {
+  const q = (query || "").toLowerCase();
+  const qNorm = q.replace(/[^a-z0-9]/g, "");
+  const codes = (q.match(/[a-z]{1,3}\d{3,4}[a-z0-9-]*/g) || []).map(c => c.replace(/[^a-z0-9]/g, "")).filter(c => c.length >= 6);
+  const words = q.split(/\s+/).map(w => w.replace(/[^a-z0-9áéíóúñ]/g, "")).filter(w => w.length >= 3 && !GENERICO.has(w));
+
+  let best = 0;
+  const scored = catalog.map(p => {
+    const modelNorm = (p.model || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const partNorm  = (p.partNumber || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const title     = (p.title || "").toLowerCase();
+    let s = 0;
+    if (modelNorm.length >= 5 && qNorm.includes(modelNorm)) s += 10;
+    if (partNorm.length >= 6 && qNorm.includes(partNorm)) s += 10;
+    for (const c of codes) if (modelNorm.startsWith(c) || partNorm.startsWith(c)) s += 8;
+    s += words.filter(w => title.includes(w)).length * 2;   // ej: "zephyrus" + "duo" = 4
+    if (s > best) best = s;
+    return { p, s };
+  });
+
+  if (best < 4) return [];                       // no nombro nada concreto
+  return scored.filter(r => r.s === best).map(r => r.p).slice(0, max);
+}
+
 // ── Seleccion ────────────────────────────────────────────────────────
 // Devuelve { products, mode, budget, unmet }.
 //   mode: "ok" | "empty" | "gaming_over_budget"
@@ -192,6 +227,12 @@ export function selectProducts(catalog, query, intent, n = 3) {
   const it = intent || newIntent();
   const words = tokenize(q);
   const dir = sortDirection(q);
+
+  // Modelo nombrado: respuesta directa, sin alternativas ni escalera.
+  const named = findNamedModel(catalog, query, n);
+  if (named.length) {
+    return { products: named, mode: "ok", budget: it.budget, unmet: [], orderedBy: "modelo", exactModel: true };
+  }
 
   let pool = catalog.filter(p => price(p) > 0);
   const wantsGaming = it.uses.includes("gaming");
