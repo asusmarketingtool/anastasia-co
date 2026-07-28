@@ -1548,6 +1548,7 @@ ${productList}
 
 REGLAS (sin comillas dobles en ningun valor de texto):
 - "message": frase corta, natural y profesional en español neutro. NUNCA copies el texto del cliente. NUNCA menciones otras marcas. NUNCA uses jerga.
+  - NUNCA digas que una linea o modelo "no esta en stock", "no lo tenemos" o "esta agotado". Tu no sabes que hay en bodega: eso lo decide el sistema y te lo diria explicitamente. Si el cliente pidio algo puntual y los productos que te pasaron son otros, presenta lo que hay como alternativa SIN afirmar que lo otro no existe.
   - NUNCA afirmes un orden distinto al que te indicaron arriba. Si te dijeron que van de menor a mayor precio, no digas que van por rendimiento.
   - HONESTIDAD: si el cliente pidio algo especifico (ej: procesador i9, 32GB de RAM, una GPU puntual, una pulgada exacta) y NINGUN producto del catalogo lo cumple, NO finjas que si. Reconoce con naturalidad que ahora mismo no tienes exactamente eso en la tienda y ofrece la alternativa mas cercana explicando por que sirve. Sé honesto pero positivo, nunca inventes que un producto tiene un spec que no tiene.
 - "title_display": nombre corto del producto, max 40 caracteres.
