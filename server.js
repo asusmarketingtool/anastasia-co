@@ -169,6 +169,30 @@ const specQuestionWords = [
 ];
 function isSpecQuestion(q) { return hasWord(q, specQuestionWords); }
 
+// Pregunta corta sobre la laptop que el cliente ya eligio, aunque no use
+// ninguna palabra de la lista de arriba ("sabes cual es la tasa de refresco?").
+function esPreguntaCorta(q) {
+  const t = (q || "").trim();
+  if (t.split(/\s+/).length > 14) return false;
+  // Si arranca pidiendo otra laptop, es busqueda nueva, no pregunta de ficha.
+  const nuevaBusqueda = /(barat|econ[oó]mic|potente|otra|otras|mu[eé]strame|muestra|recomienda|presupuesto|millones|busco|necesito|quiero una|quiero otra|^laptop|^port[aá]til|^equipo|^computador)/i;
+  return !nuevaBusqueda.test(t);
+}
+
+// Preguntas que la ficha del feed no puede responder aunque el campo exista.
+// "¿Es ampliable la memoria?" no se contesta con "64GB LPDDR5X".
+const NECESITA_DETALLE = [
+  [/ampliable|se puede ampliar|expandir|agregar m[aá]s|sumar m[aá]s|subir la memoria/i, "ram", /ampliabl|soldad|expandibl|ranura|slot|so-dimm/i],
+  [/se puede cambiar|reemplazar|actualizar el disco/i, "ssd", /ranura|slot|libre|adicional|m\.2/i],
+];
+
+function fichaAlcanza(q, campo, valor) {
+  for (const [preg, c, requiere] of NECESITA_DETALLE) {
+    if (c === campo && preg.test(q) && !requiere.test(valor)) return false;
+  }
+  return true;
+}
+
 function formatCOP(amount) {
   return `$${Math.round(amount).toLocaleString("es-CO")}`;
 }
@@ -241,54 +265,140 @@ async function refreshCatalog() {
   }
 }
 
-// Extrae specs directo de la descripcion del feed. Se usa cuando el LLM no
-// devuelve items alineados, para que la tarjeta nunca salga sin chips.
+// ── Lectura de la ficha del feed ─────────────────────────────────────
+// El feed CO trae la descripcion con etiquetas y con simbolos ® y ™:
+//   "Sistema Operativo: Windows 11 Home Procesador: Intel® Core™ Ultra 9 ..."
+// Sin normalizar, "RTX™ 5090" no coincide con "rtx 5090" y la tarjeta sale
+// sin procesador, sin disco y sin GPU.
+function normTxt(s) {
+  return String(s || "")
+    .replace(/[\u00ae\u2122\u00a9]/g, " ")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Corta la descripcion en secciones usando SOLO etiquetas conocidas.
+// Con un separador generico, "240Hz Tarjeta Grafica:" se leia como etiqueta
+// y el valor de pantalla perdia el "Hz".
+const ETIQUETAS = /(sistema operativo|procesador|memoria ram|memoria|almacenamiento|disco duro|disco|pantalla|display|tarjeta gr[aá]fica|gr[aá]ficos|gr[aá]fica|teclado|bater[ií]a|c[aá]mara|webcam|puertos|conectividad|interfaces|peso|color|garant[ií]a|incluye|contenido de la caja|en la caja|wi-?fi|bluetooth|audio|parlantes|red|lector|huella|dimensiones)\s*:\s*/gi;
+
+function descSections(p) {
+  const d = normTxt(p.descriptionFull || p.description || "");
+  const out = [];
+  let m, last = null;
+  ETIQUETAS.lastIndex = 0;
+  while ((m = ETIQUETAS.exec(d)) !== null) {
+    if (last) out.push([last.k, d.slice(last.i, m.index).trim()]);
+    last = { k: m[1].trim().toLowerCase(), i: ETIQUETAS.lastIndex };
+  }
+  if (last) out.push([last.k, d.slice(last.i).trim()]);
+  return out;
+}
+
+const CAMPOS = {
+  so:       /sistema operativo|windows/i,
+  cpu:      /procesador|cpu/i,
+  ram:      /memoria|\bram\b/i,
+  ssd:      /almacenamiento|disco/i,
+  pantalla: /pantalla|display/i,
+  gpu:      /tarjeta gr[aá]fica|gr[aá]fic|gpu|video/i,
+  teclado:  /teclado/i,
+  huella:   /huella|lector/i,
+  bateria:  /bater[ií]a/i,
+  camara:   /c[aá]mara|webcam/i,
+  puertos:  /puertos|conectividad|interfaces/i,
+  peso:     /peso/i,
+  color:    /color/i,
+  garantia: /garant[ií]a/i,
+  incluye:  /incluye|en la caja|contenido/i,
+  wifi:     /wi-?fi|inal[aá]mbric|bluetooth/i,
+  audio:    /audio|parlantes|bocinas|sonido/i,
+};
+
 function parseSpecs(p) {
-  const d = ` ${p.descriptionFull || p.description || ""} `;
-  const pick = (re) => { const m = d.match(re); return m ? m[0].trim().replace(/^[,\s]+|[,\s]+$/g, "") : ""; };
-  return {
-    cpu: pick(/(intel\s+)?core\s+(ultra\s+)?[i]?\d[\w-]*\s*\d{0,4}\w*|(amd\s+)?ryzen\s*\d\s*\d{3,4}\w*/i),
-    ram: pick(/\d{1,3}\s?gb\s+(?:lp)?ddr\d\w*/i),
-    ssd: pick(/\d+\s?(gb|tb)\s+ssd/i),
-    pantalla: pick(/\b\d{2}(\.\d)?\s*(oled|pantalla|fhd\+?|wuxga|qhd\+?|pulgadas?)\w*/i),
-    gpu: pick(/(nvidia\s+)?(geforce\s+)?(rtx|gtx)\s*\d{3,4}(\s*\d{1,2}gb)?|intel\s+arc[\w\s]{0,10}|iris\s+xe|radeon\s+graphics/i),
-    teclado: pick(/teclado[\w\s,]{0,60}(espa[nñ]ol|latinoameric|retroilumin|iluminad|backlit)[\w\s]{0,25}|(espa[nñ]ol|latinoameric)[\w\s]{0,15}teclado/i),
-    so: pick(/windows\s*11\s*(home|pro)?[\w\s]{0,12}/i),
-  };
+  const out = {};
+  for (const [label, val] of descSections(p)) {
+    for (const key in CAMPOS) {
+      if (!out[key] && CAMPOS[key].test(label)) { out[key] = val.slice(0, 130); break; }
+    }
+  }
+  // Respaldo por texto libre para los cinco datos de la tarjeta.
+  const d = " " + normTxt(p.descriptionFull || p.description || "") + " ";
+  const pick = (re) => { const m = d.match(re); return m ? m[0].trim() : ""; };
+  if (!out.cpu)      out.cpu      = pick(/(intel\s+)?core\s+(ultra\s+)?[i]?\d[\w-]*\s*\d{0,4}\w*|(amd\s+)?ryzen[\w\s]{0,14}\d{3,4}\w*/i);
+  if (!out.ram)      out.ram      = pick(/\d{1,3}\s?gb\s+(?:lp)?ddr\d\w*/i);
+  if (!out.ssd)      out.ssd      = pick(/\d+\s?(gb|tb)[\w\s.]{0,18}ssd/i);
+  if (!out.pantalla) out.pantalla = pick(/\d{2}(\.\d)?\s*("|pulg)[\w\s.+:x]{0,28}/i);
+  if (!out.gpu)      out.gpu      = pick(/(nvidia\s+)?(geforce\s+)?(rtx|gtx)\s*\d{3,4}[\w\s]{0,14}|intel\s+arc[\w\s]{0,10}|iris\s+xe|radeon[\w\s]{0,10}/i);
+  for (const k in out) out[k] = normTxt(out[k]);
+  return out;
 }
 
-// "Ideal para" y tagline calculados del catalogo. Antes los generaba el LLM
-// en el JSON; en la ruta de modelo nombrado ya no hay JSON, asi que se derivan
-// de las specs reales y la tarjeta nunca sale sin chips.
-function gpuTier(t) {
-  const g = t.match(/\b(rtx|gtx)\s*(\d{4})\b/i);
-  return g ? parseInt(g[2].slice(2), 10) : 0;
+// Que campo de la ficha responde la pregunta del cliente.
+const PREGUNTA_CAMPO = [
+  // Pantalla — incluye ingles y errores comunes de escritura ("taza")
+  [/ta[sz]a de refresco|tesa de refresco|refresh rate|frecuencia de (la )?pantalla|\bhz\b|herc?ios|herzios|hertz|refresco de pantalla|cuantos hz/i, "pantalla"],
+  [/pantalla|display|pulgadas|\bpulg\b|tama[nñ]o de (la )?pantalla|resoluci[oó]n|\bfhd\b|\bqhd\b|\boled\b|\bips\b|nits|brillo|antirreflejo|mate|t[aá]ctil|touch/i, "pantalla"],
+  // Memoria
+  [/\bram\b|memoria|\bgb de memoria\b|\bddr\d/i, "ram"],
+  // Procesador
+  [/procesador|\bcpu\b|\bchip\b|n[uú]cleos|\bghz\b|que intel|que ryzen|generaci[oó]n del procesador/i, "cpu"],
+  // Almacenamiento
+  [/disco|almacenamiento|\bssd\b|\bnvme\b|capacidad|espacio|cuantos gb (tiene|trae|de disco)|\btb\b/i, "ssd"],
+  // Grafica
+  [/gr[aá]fic|\bgpu\b|tarjeta de video|\bvram\b|video dedicad|nvidia|geforce|radeon|\brtx\b|\bgtx\b/i, "gpu"],
+  // Teclado
+  [/teclado|keyboard|retroilumin|iluminad|distribuci[oó]n|\b[ñn]\b|numerico|num[eé]rico/i, "teclado"],
+  [/huella|fingerprint|lector de huella|reconocimiento facial|windows hello/i, "huella"],
+  // Bateria y portabilidad
+  [/bater[ií]a|battery|autonom[ií]a|cu[aá]nto dura|duraci[oó]n de (la )?bater|\bwh\b|carga r[aá]pida/i, "bateria"],
+  [/peso|pesa|\bkg\b|kilos|liviana|pesada|es pesado|f[aá]cil de llevar|para cargar/i, "peso"],
+  // Camara y audio
+  [/c[aá]mara|webcam|videollamad|para clases virtuales|para zoom|para meet/i, "camara"],
+  [/audio|parlante|bocina|sonido|speakers|micr[oó]fono/i, "audio"],
+  // Puertos y conectividad
+  [/puerto|hdmi|\busb\b|usb-?c|thunderbolt|conector|conectar|entrada (de|para)|salida de|lector de tarjetas|lector sd|\bsd\b|ethernet|rj-?45|jack|aud[ií]fonos|auriculares|monitor externo|dos monitores|pantalla externa|proyector/i, "puertos"],
+  [/wi-?fi|bluetooth|inal[aá]mbric|conectividad/i, "wifi"],
+  // Otros
+  [/de que color|\bcolor\b|colores disponibles/i, "color"],
+  [/garant[ií]a|warranty|cobertura/i, "garantia"],
+  [/incluye|en la caja|viene con|trae mouse|trae cargador|malet[ií]n|mochila|accesorios|contenido/i, "incluye"],
+  [/sistema operativo|windows|office|\bso\b\b|preinstalado/i, "so"],
+];
+
+// Preguntas de idoneidad: no son un dato de la ficha, son un juicio.
+// "¿Sirve para AutoCAD?" se responde mirando CPU/RAM/GPU, no escalando.
+const PREGUNTA_USO = /(sirve para|es buena para|es bueno para|aguanta|corre|puedo (usar|correr|jugar|editar)|alcanza para|me sirve para|funciona para|rinde (bien )?(en|para)|es apta para)/i;
+
+function campoDePregunta(q) {
+  for (const [re, campo] of PREGUNTA_CAMPO) if (re.test(q)) return campo;
+  return null;
 }
 
-function idealPara(p) {
-  const t = `${p.title} ${p.descriptionFull || p.description || ""}`.toLowerCase();
-  const tier = gpuTier(t);
-  if (/proart/.test(t)) return "Diseño y edición";
-  if (/zephyrus|strix|scar/.test(t) && tier >= 70) return "Gaming y creación";
-  if (tier >= 60) return "Gaming exigente";
-  if (tier > 0) return "Gaming y estudio";
-  if (/expertbook/.test(t)) return "Trabajo diario";
-  if (/zenbook/.test(t)) return /oled/.test(t) ? "Productividad y diseño" : "Portabilidad y trabajo";
-  if (/vivobook/.test(t)) return "Universidad y trabajo";
-  return "Uso diario";
-}
+const CAMPOS_VALIDOS = ["pantalla","ram","cpu","ssd","gpu","teclado","huella","bateria",
+  "camara","audio","puertos","wifi","color","garantia","incluye","so"];
 
-function taglineFor(p) {
-  const t = `${p.title} ${p.descriptionFull || p.description || ""}`.toLowerCase();
-  const tier = gpuTier(t);
-  if (/zephyrus duo|screenpad plus/.test(t)) return "Doble pantalla";
-  if (/proart/.test(t)) return "Color profesional";
-  if (tier >= 80) return "Potencia máxima";
-  if (tier >= 60) return "Alto rendimiento";
-  if (tier > 0) return "Gaming accesible";
-  if (/oled/.test(t)) return "Pantalla OLED";
-  if (/1\.[0-4]\s*kg|liviana|delgada/.test(t)) return "Ultraliviana";
-  return "Disponible";
+// Respaldo: si las reglas no reconocen la pregunta, se le pide a Haiku que la
+// clasifique en uno de los campos de la ficha. Solo clasifica; NO responde ni
+// inventa datos. Si no es una pregunta tecnica, devuelve null y sigue el flujo.
+async function campoDePreguntaIA(q) {
+  try {
+    const r = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 12,
+      system: `Clasificas preguntas de clientes sobre laptops. Devuelve UNA sola palabra de esta lista, sin explicar y sin puntuacion:
+${CAMPOS_VALIDOS.join(" ")} NINGUNO
+Significado: pantalla (tamaño, resolucion, hz, tactil), ram (memoria), cpu (procesador), ssd (disco), gpu (tarjeta grafica), teclado, huella (lector o desbloqueo), bateria (duracion), camara, audio, puertos (usb, hdmi, lector), wifi (bluetooth), color, garantia, incluye (que trae en la caja), so (sistema operativo, Office).
+Si la pregunta NO es sobre una caracteristica de la laptop (precio, envio, pago, si sirve para algun uso, saludo), responde NINGUNO.`,
+      messages: [{ role: "user", content: q }],
+    });
+    const out = (r.content[0]?.text || "").trim().toLowerCase().replace(/[^a-z]/g, "");
+    return CAMPOS_VALIDOS.includes(out) ? out : null;
+  } catch (e) {
+    console.error("⚠️ Clasificador de pregunta fallo:", e.message);
+    return null;
+  }
 }
 
 function itemFromCatalog(p, extra = {}) {
@@ -306,7 +416,7 @@ function itemFromCatalog(p, extra = {}) {
     IMAGEN: p.image,
     SPECS: [sp.cpu, sp.ram, sp.ssd, sp.pantalla].filter(Boolean).join(" | ") || (p.description || "").slice(0, 90),
     CPU: sp.cpu, RAM: sp.ram, SSD: sp.ssd, PANTALLA: sp.pantalla, GPU: sp.gpu,
-    TECLADO_ES: sp.teclado, EN_CAJA: "",
+    TECLADO_ES: sp.teclado || "", EN_CAJA: sp.incluye || "",
     IDEAL_PARA: idealPara(p), TAGLINE: calcPromo(p.regularPrice, p.price) ? "En oferta" : taglineFor(p),
     PROMO: calcPromo(p.regularPrice, p.price) || formatCOP(offerNum),
     ...extra,
@@ -700,6 +810,94 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
       });
     }
 
+    // Red de seguridad: pregunta sobre la laptop elegida que no sabemos mapear
+    // a ningun campo. Antes caia en busqueda y devolvia 3 tarjetas sin relacion.
+    if (session?.selectedProduct && !campoDePregunta(q) && esPreguntaCorta(q) &&
+        /(tiene|trae|viene|incluye|soporta|es compatible|cuenta con)/i.test(q) &&
+        !PREGUNTA_USO.test(q) &&
+        !/(gaming|jugar|juegos|dise[nñ]o|autocad|solidworks|revit|photoshop|illustrator|premiere|editar|render|streaming|programar|excel|office|word|zoom|meet|clases|universidad|trabajo|estudiar|contabilidad)/i.test(q)) {
+      const t = session.selectedProduct.title;
+      const msg = `Ese detalle no aparece en la ficha que tengo de la ${t}. Para no darte un dato equivocado, mejor te lo confirma un asesor. Da clic en "Hablar con asesor".`;
+      session.history.push({ role: "user", content: query });
+      session.history.push({ role: "assistant", content: msg });
+      console.log(`❓ Pregunta sin campo conocido → asesor`);
+      trackWeb({ session_id: sessionId || ip, message_type: "no_data",
+        query: query.slice(0, 500), bot_message: msg.slice(0, 500), products_count: 0 });
+      return res.json({ message: msg, escalate: true, items: [] });
+    }
+
+    // ── Pregunta sobre la laptop que el cliente ya eligio ──────────────
+    // Se responde con el dato EXACTO de la ficha del feed. Si el feed no lo
+    // trae, se dice con honestidad y se ofrece un asesor: nunca se inventa.
+    const elegida = session?.selectedProduct;
+    let campoPreg = campoDePregunta(q);
+    // Si las reglas no la reconocen pero es una pregunta corta sobre la laptop
+    // elegida y no es de idoneidad, se le pide a Haiku que la clasifique.
+    if (elegida && !campoPreg && esPreguntaCorta(q) && !PREGUNTA_USO.test(q) && !isFollowUp(q)) {
+      campoPreg = await campoDePreguntaIA(query);
+      if (campoPreg) console.log(`🤖 Clasificador IA: "${query}" → ${campoPreg}`);
+    }
+    if (elegida && campoPreg && (isSpecQuestion(q) || esPreguntaCorta(q))) {
+      const prod = catalog.find(c => c.title === elegida.title);
+      const sp = prod ? parseSpecs(prod) : {};
+      let valor = sp[campoPreg] || "";
+      if (valor && !fichaAlcanza(q, campoPreg, valor)) valor = "";   // la ficha no alcanza
+      const nombreCampo = {
+        pantalla: "la pantalla", ram: "la memoria RAM", cpu: "el procesador",
+        ssd: "el almacenamiento", gpu: "la tarjeta grafica", teclado: "el teclado",
+        bateria: "la bateria", camara: "la camara", puertos: "los puertos",
+        peso: "el peso", color: "el color", garantia: "la garantia",
+        incluye: "lo que trae en la caja", so: "el sistema operativo", huella: "el lector de huella",
+        wifi: "la conectividad", audio: "el audio",
+      }[campoPreg] || "ese detalle";
+
+      if (!valor) {
+        const msg = `Ese detalle no aparece en la ficha que tengo de la ${elegida.title}. No quiero darte un dato equivocado, asi que mejor te lo confirma un asesor. Da clic en "Hablar con asesor" y te responden enseguida.`;
+        if (session) {
+          session.history.push({ role: "user", content: query });
+          session.history.push({ role: "assistant", content: msg });
+        }
+        console.log(`❓ Dato no disponible en el feed (${campoPreg}) → asesor`);
+        trackWeb({
+          session_id: sessionId || ip, message_type: "no_data",
+          query: query.slice(0, 500), bot_message: msg.slice(0, 500),
+          products_shown: elegida.title.slice(0, 500), products_count: 0,
+        });
+        return res.json({ message: msg, escalate: true, items: [] });
+      }
+
+      let ans = "";
+      try {
+        const r = await anthropic.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 160,
+          system: `Eres AnastasIA, asesora de laptops ASUS Colombia. Español claro y profesional, sin jerga, trata al cliente de "tú".
+El cliente ya eligio esta laptop: ${elegida.title}
+DATO EXACTO de su ficha sobre ${nombreCampo}: ${valor.replace(/"/g, "'")}
+REGLAS:
+- Responde SOLO su pregunta usando ESE dato tal cual. No agregues numeros ni caracteristicas que no esten en el dato.
+- Maximo 2 frases. Puedes cerrar invitando a dar clic en "Ver producto".
+- No menciones otras laptops. Texto plano, sin JSON, sin listas.`,
+          messages: [{ role: "user", content: query }],
+        });
+        ans = (r.content[0]?.text || "").trim();
+      } catch (e) {
+        console.error("⚠️ Respuesta de spec fallo:", e.message);
+      }
+      if (!ans) ans = `En la ${elegida.title}, ${nombreCampo} es: ${valor}.`;
+      if (session) {
+        session.history.push({ role: "user", content: query });
+        session.history.push({ role: "assistant", content: ans });
+      }
+      console.log(`📄 Pregunta de ficha (${campoPreg}) respondida con dato del feed`);
+      trackWeb({
+        session_id: sessionId || ip, message_type: "model_question",
+        query: query.slice(0, 500), bot_message: ans.slice(0, 500),
+        products_shown: elegida.title.slice(0, 500), products_count: 0,
+      });
+      return res.json({ message: ans, items: [] });
+    }
+
     const specQuestion = isSpecQuestion(q) && (session?.selectedProduct || session?.shownProducts?.length);
 
     if (isFollowUp(q) || isModelPick || specQuestion) {
@@ -729,7 +927,8 @@ REGLAS:
 - Si elige un modelo: confirma su eleccion, felicitalo brevemente y dile que puede dar clic en "Ver producto" de esa laptop para comprarla. NO muestres otras.
 - Si es un agradecimiento o cierre: responde con cortesía breve y ofrece seguir ayudando.
 - Si el cliente reclama que falta un spec que pidio (ej: "pero no tiene i9", "ninguna tiene 32GB"): reconoce con honestidad que ahora mismo no hay en la tienda exactamente ese spec, y explica brevemente por que las que le mostraste igual le sirven (ej: "Cierto, justo ahora no tenemos i9 disponible, pero el Ryzen 7 de la TUF rinde parejito para gaming"). NUNCA digas que una laptop tiene un spec que no tiene.
-- IDONEIDAD PARA GAMING (importante): si el cliente pregunta si una laptop especifica sirve para gaming, juzga HONESTAMENTE por su tarjeta grafica:
+- IDONEIDAD DE USO (importante): si el cliente pregunta si la laptop le sirve para algo (Excel, Office, Zoom, clases, programar, AutoCAD, Photoshop, edicion de video, gaming), JUZGALO con los datos de la FICHA COMPLETA de arriba y responde con honestidad. Guia rapida: ofimatica, clases y videollamadas los cumple cualquier laptop del catalogo; programar y multitarea piden 16GB de RAM o mas; AutoCAD 2D y edicion de fotos piden 16GB y de preferencia grafica dedicada; render 3D, edicion de video 4K y gaming exigente piden RTX dedicada y 32GB. Si la laptop no alcanza, dilo claro y explica que le faltaria. Nunca digas que sirve para todo.
+- IDONEIDAD PARA GAMING: si el cliente pregunta si una laptop especifica sirve para gaming, juzga HONESTAMENTE por su tarjeta grafica:
   - Es buena para gaming SOLO si tiene GPU dedicada NVIDIA (RTX o GTX). Ej: RTX 5050, RTX 4050, RTX 3050.
   - NO es para gaming si tiene graficos integrados (Radeon integrada, Intel Graphics, Intel Arc, Adreno, Radeon Graphics). Estas son para trabajo/estudio. Dilo claro: "esa es mas para trabajo y estudio, no para gaming exigente".
   - Mira la lista de arriba para ver que GPU tiene la laptop por la que preguntan. NUNCA llames "gaming" a una con graficos integrados.
