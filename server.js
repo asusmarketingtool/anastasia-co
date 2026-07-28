@@ -1,3 +1,11 @@
+// ═══════════════════════════════════════════════════════════════
+//  ANASTASIA — COLOMBIA
+//  repo: anastasia-co          moneda: COP
+//  este archivo va junto con: search-co.js
+//  feed: feeds.datafeedwatch.com/73484/...
+//  NO mezclar con el server.js del otro pais
+// ═══════════════════════════════════════════════════════════════
+
 import express from "express";
 import fetch from "node-fetch";
 import { XMLParser } from "fast-xml-parser";
@@ -301,7 +309,10 @@ async function refreshCatalog() {
       if (!p.title) return false;
       const regular = parseFloat(p.regularPrice) || 0;
       const offer = parseFloat(p.price) || 0;
-      if (regular > 0 && offer > 0 && (offer / regular) < 0.5) { excluir(p, "descuento mayor a 50% (posible error de precio)"); return false; }
+      // Solo se descarta un descuento absurdo (más del 80%), que casi siempre es un
+      // error de precio en el feed. Las liquidaciones reales de 50-60% son válidas
+      // y antes se estaban botando: una Vivobook Go a -53% no aparecía nunca.
+      if (regular > 0 && offer > 0 && (offer / regular) < 0.2) { excluir(p, "descuento mayor a 80% (posible error de precio)"); return false; }
 
       // El feed manda: si viene marcado sin stock, no se recomienda.
       const dispo = normTxt(p.availability || "").toLowerCase();
