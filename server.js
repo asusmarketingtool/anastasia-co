@@ -120,6 +120,8 @@ const PALABRAS_DOMINIO = [
   // producto
   "laptop","laptops","portatil","portátil","portatiles","portátiles","computador","computadora",
   "notebook","equipo","equipos","maquina","máquina","pc","asus","rog","tuf","vivobook","zenbook",
+  "torre","torres","escritorio","desktop","mesa","aio","monitor","monitores","pantalla externa",
+  "consola","consolas","ally","handheld","todo en uno","all in one",
   "expertbook","proart","strix","scar","zephyrus","ally",
   // usos
   "gaming","gamer","jugar","juego","juegos","universidad","estudiar","estudio","estudiante","colegio",
@@ -158,6 +160,8 @@ function esDelDominio(q) {
 }
 
 const SALUDOS = /^(hola|buenas|buenos d[ií]as|buenas tardes|buenas noches|hey|que tal|qué tal|saludos|hi|hello)[\s!.,¡]*$/i;
+// Respuestas cortas a una pregunta del bot: no son "fuera de dominio".
+const AFIRMACIONES = /^(s[ií]|claro|dale|bueno|ok|okay|listo|por favor|porfa|de una|obvio|correcto|exacto|no|nop|ninguno|ninguna)[\s!.,¡]*$/i;
 
 function isOffTopic(query) {
   return hasWord(query, offTopicWords);
@@ -292,6 +296,13 @@ async function refreshCatalog() {
       const regular = parseFloat(p.regularPrice) || 0;
       const offer = parseFloat(p.price) || 0;
       if (regular > 0 && offer > 0 && (offer / regular) < 0.5) { excluir(p, "descuento mayor a 50% (posible error de precio)"); return false; }
+
+      // El feed manda: si viene marcado sin stock, no se recomienda.
+      const dispo = normTxt(p.availability || "").toLowerCase();
+      if (/out.?of.?stock|agotado|sin stock|no disponible|discontinued|descontinuado|unavailable/.test(dispo)) {
+        excluir(p, "sin stock segun el feed");
+        return false;
+      }
 
       const t = `${p.title} ${p.category}`.toLowerCase();
       const accessoryWords = [
@@ -753,6 +764,16 @@ app.get("/anastasia", async (req, res) => {
   console.log(`AnastasIA CO consulta: "${query}"${sessionId ? ` [${sessionId}]` : ""} intent=[${intent.uses.join(",")}] budget=${intent.budget}`);
   if (!query || !query.trim()) return res.json({ message: "Cuéntame qué tipo de laptop buscas y te ayudo a encontrarla.", items: [] });
 
+  // Si el feed no cargo, no se le puede pedir al cliente que insista.
+  if (!catalog.length) {
+    console.error("⚠️ Catálogo vacío: el feed no cargó");
+    return res.json({
+      message: "Estoy teniendo problemas para consultar el catálogo en este momento. Un asesor te puede atender de una vez mientras se restablece.",
+      escalate: true,
+      items: [],
+    });
+  }
+
   if (query.startsWith("http://") || query.startsWith("https://")) {
     return res.json({
       message: "Solo puedo ayudarte con recomendaciones de laptops ASUS. ¿Qué tipo de laptop estás buscando?",
@@ -835,20 +856,23 @@ app.get("/anastasia", async (req, res) => {
     // ── Relevancia: si no habla de laptops ni continua la conversacion,
     // no entra. Esto es lo que impide usar a AnastasIA como una IA general.
     const hayContexto = !!(session?.selectedProduct || session?.shownProducts?.length);
+    const hayConversacion = !!(session?.history?.length);
     if (!esDelDominio(q) && !SALUDOS.test(q.trim()) && !isFollowUp(q) &&
+        !(hayConversacion && AFIRMACIONES.test(q.trim())) &&
         !(hayContexto && esPreguntaCorta(q))) {
       console.log(`🛡️ Fuera de dominio: "${query.slice(0, 60)}"`);
       trackWeb({ session_id: sessionId || ip, message_type: "fuera_de_dominio",
         query: query.slice(0, 500), bot_message: "redirigido", products_count: 0 });
       return res.json({
-        message: "Soy AnastasIA, la asesora virtual de laptops ASUS de la tienda, así que solo puedo ayudarte con eso. ¿Qué tipo de laptop estás buscando: gaming, universidad, trabajo o diseño?",
+        message: `Soy AnastasIA, la asesora virtual de la tienda ASUS Colombia, así que solo puedo ayudarte con eso. ${fraseOfrecerLoQueHay(null)}`.trim(),
         items: [],
       });
     }
 
     const salesWords = [
       "cupon","cupón","codigo descuento","código descuento","promocion","promoción",
-      "descuento","descuentos","rebaja","rebajar","precio especial","mejor precio","me lo dejas",
+      "me das un descuento","me da un descuento","me hacen un descuento","hacer un descuento",
+      "descuento adicional","descuento especial","rebaja","rebajar","precio especial","mejor precio","me lo dejas",
       "me lo deja","hacer un precio","precio mas bajo","precio más bajo","negociar","regatear",
       "apartar","apartado","separar","reservar","me lo guardas","me lo guarda","separame","apartame",
       "factura electronica","factura electrónica","datos de facturacion",
@@ -1242,6 +1266,21 @@ REGLAS:
     // isModelPick ya lo resolvio arriba. Aqui solo seguimos con la seleccion.
     // ── SELECCION DE PRODUCTOS ────────────────────────────────────────
     // Todo el ranking vive en search-co.js. Aqui solo se redacta.
+    // ¿Nombró un modelo que no tenemos? Se le dice antes de mostrar parecidas.
+    const codigoPedido = (q.match(/\b[a-z]{1,3}\d{3,4}[a-z0-9-]{0,12}\b/gi) || [])
+      .filter(c => c.replace(/[^a-z0-9]/gi, "").length >= 5);
+    let notaModelo = "";
+    if (codigoPedido.length) {
+      const existe = catalog.some(p => {
+        const m = `${p.model} ${p.partNumber} ${p.title}`.toLowerCase().replace(/[^a-z0-9]/g, "");
+        return codigoPedido.some(c => m.includes(c.toLowerCase().replace(/[^a-z0-9]/g, "")));
+      });
+      if (!existe) {
+        notaModelo = `IMPORTANTE: el cliente pidio un modelo puntual (${codigoPedido[0]}) que NO esta en la tienda. Dilo con honestidad en la primera frase y presenta estas como las opciones mas parecidas que si tenemos.`;
+        console.log(`🔎 Modelo no disponible: ${codigoPedido[0]}`);
+      }
+    }
+
     const sel = selectProducts(catalog, query, intent, 3);
 
     // Caso: pidio gaming pero su presupuesto no alcanza para ninguna gaming.
@@ -1287,7 +1326,8 @@ Escribe un mensaje corto (2-3 frases) que:
     // Caso: no hay NADA que encaje.
     if (sel.mode === "empty" || sel.products.length === 0) {
       const budget = sel.budget;
-      const cheapest = catalog.reduce((min, p) => {
+      const delTipo = catalog.filter(p => (p.tipo || "laptop") === (intent.tipo || "laptop"));
+      const cheapest = delTipo.reduce((min, p) => {
         const pr = parseFloat(p.price) || 0;
         return (pr > 0 && pr < min) ? pr : min;
       }, Infinity);
@@ -1295,7 +1335,7 @@ Escribe un mensaje corto (2-3 frases) que:
       const noStockPrompt =
         `Eres AnastasIA, asesora de laptops ASUS Colombia. Tono profesional y cercano, en español claro sin jerga ni modismos.
 El cliente pidio: "${query}".
-SITUACION: en la tienda NO hay ninguna laptop que encaje con ese pedido${budget ? ` (su presupuesto es ${formatCOP(budget)})` : ""}.${cheapestTxt ? ` La laptop mas economica disponible cuesta ${cheapestTxt}.` : ""}
+SITUACION: en la tienda NO hay ningún equipo del tipo pedido (${NOMBRE_TIPO[intent.tipo || "laptop"]}) que encaje con ese pedido${budget ? ` (su presupuesto es ${formatCOP(budget)})` : ""}.${cheapestTxt ? ` La laptop mas economica disponible cuesta ${cheapestTxt}.` : ""}
 Escribe un mensaje corto (2-3 frases) que:
 - Diga con honestidad y sin drama que ahorita no tenemos algo en ese rango/criterio.
 - ${budget && cheapestTxt ? `Mencione que las opciones arrancan alrededor de ${cheapestTxt}, por si puede ajustar.` : "Pida un poco mas de detalle (uso o presupuesto) para ayudarle mejor."}
@@ -1315,7 +1355,7 @@ Escribe un mensaje corto (2-3 frases) que:
       }
       if (!msg) {
         msg = budget
-          ? `Ahorita no tengo laptops en ese presupuesto${cheapestTxt ? `; las opciones arrancan alrededor de ${cheapestTxt}` : ""}. ¿Hasta cuánto podrías estirar?`
+          ? `Ahorita no tengo ${NOMBRE_TIPO[intent.tipo || "laptop"]} en ese presupuesto${cheapestTxt ? `; las opciones arrancan alrededor de ${cheapestTxt}` : ""}. ¿Hasta cuánto podrías estirar?`
           : "Cuéntame un poco más (uso y presupuesto) y te busco la mejor opción.";
       }
       if (session) {
@@ -1391,8 +1431,10 @@ REGLAS:
     }
 
     const productsToSend = sel.products;
-    // Modelo nombrado: queda registrado como "la elegida" para los seguimientos.
-    if (sel.exactModel && productsToSend.length === 1 && session) {
+    // Si solo hay una tarjeta, esa es "la elegida" para los seguimientos:
+    // asi "cuanta ram trae" se responde con el dato exacto de su ficha y no
+    // depende de que el modelo lo recuerde.
+    if (productsToSend.length === 1 && session) {
       const p = productsToSend[0];
       session.selectedProduct = { title: p.title, model: p.model, specs: p.description };
     }
@@ -1400,6 +1442,7 @@ REGLAS:
     // El tipo de mensaje sale del orden REAL que se aplico, no de adivinar.
     const messageType =
       sel.orderedBy === "precio_asc"       ? "budget" :
+      sel.orderedBy === "oferta"           ? "oferta" :
       sel.orderedBy === "modelo"           ? "named"  :
       sel.orderedBy === "rendimiento_desc" ? "power"  :
       (intent.cpu || intent.gpu || intent.ram) ? "spec" : "normal";
@@ -1408,10 +1451,11 @@ REGLAS:
       budget: `El cliente busca: "${query}". Le mostramos ${productsToSend.length} opciones ordenadas de MENOR a MAYOR precio; la primera es la mas economica de la tienda que encaja con lo que pidio. MESSAGE: frase corta y profesional en español neutro, sin jerga.`,
       power:  `El cliente busca: "${query}". Le mostramos ${productsToSend.length} opciones ordenadas de MAYOR a MENOR rendimiento real (tarjeta grafica y procesador, no precio). MESSAGE: frase corta y profesional en español neutro, sin jerga.`,
       spec:   `El cliente busca: "${query}". Le mostramos ${productsToSend.length} laptops que cumplen la especificacion que pidio. MESSAGE: frase corta y profesional en español neutro, sin jerga.`,
+      oferta: `El cliente pregunto que hay en oferta. Le mostramos ${"${productsToSend.length}"} productos con descuento, del mayor al menor descuento. MESSAGE: frase corta que invite a aprovechar, sin exagerar ni inventar porcentajes. Español neutro, sin jerga.`,
       named:  `El cliente pregunto por un modelo especifico y SI lo tenemos disponible.${isSpecQuestion(q) ? ` ADEMAS hizo una pregunta puntual sobre sus especificaciones. RESPONDE ESA PREGUNTA PRIMERO, con el dato exacto que aparece en la descripcion del producto (ej: "Trae 64GB LPDDR5X"). Si ese dato NO aparece en la descripcion, dilo con honestidad y sugiere confirmarlo con un asesor. Despues de responder, una sola frase de por que es buena opcion.` : ` MESSAGE: confirma que esta disponible en la tienda y di en una frase por que es buena opcion y para que usos brilla segun sus specs reales.`} NO ofrezcas alternativas ni la compares con otras: el cliente ya sabe cual quiere. NUNCA digas que le estas mostrando varias opciones: solo hay una tarjeta. Frase corta, profesional, sin jerga.`,
       normal: `El cliente busca: "${query}". Le mostramos ${productsToSend.length} opciones que encajan con lo que pidio, de menor a mayor precio, para que compare. MESSAGE: frase corta y profesional en español neutro, sin jerga.`,
     };
-    let userMessage = intentMap[messageType];
+    let userMessage = (notaModelo ? notaModelo + " " : "") + intentMap[messageType];
 
     // Honestidad: specs pedidos que NINGUNA de estas laptops cumple.
     if (sel.unmet.length) {
@@ -1492,10 +1536,12 @@ REGLAS (sin comillas dobles en ningun valor de texto):
         budget: "Estas son las opciones mas economicas que tengo disponibles, de menor a mayor precio.",
         power:  "Estas son las mas potentes que tengo ahora mismo, ordenadas por rendimiento.",
         spec:   "Estas cumplen lo que me pediste. Dale clic en Ver producto para el detalle.",
+        oferta: "Estas son las que tenemos en oferta ahora mismo, de mayor a menor descuento.",
         named:  "Si, la tenemos disponible. Dale clic en Ver producto para el detalle.",
         normal: "Estas son las opciones que mejor encajan con lo que buscas.",
       };
-      result = { message: msgPorTipo[messageType] || msgPorTipo.normal, items: [] };
+      const base = msgPorTipo[messageType] || msgPorTipo.normal;
+      result = { message: notaModelo ? `No tengo ese modelo exacto en la tienda. ${base}` : base, items: [] };
       console.log(`↩️ Respaldo sin IA: ${productsToSend.length} tarjeta(s) armadas del catalogo`);
     }
 
