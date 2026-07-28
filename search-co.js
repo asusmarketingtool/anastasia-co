@@ -59,7 +59,7 @@ export const USE_PATTERNS = {
   gaming:       /(gaming|gamer|jugar|juego|juegos|videojuego|fortnite|valorant|\blol\b|\bgta\b|warzone|\bcod\b|minecraft|dota|csgo|fifa|\bea fc\b)/i,
   universidad:  /(universidad|\bla u\b|\buni\b|estudiar|estudio|estudiante|carrera|tesis|colegio|clases|programar|programaci[oó]n|ingenier[ií]a)/i,
   trabajo:      /(trabajo|trabajar|oficina|ofim[aá]tica|excel|contabilidad|negocio|empresa|teletrabajo|home office|facturaci[oó]n)/i,
-  diseno:       /(dise[nñ]o|dise[nñ]ar|autocad|solidworks|revit|render|\b3d\b|edici[oó]n de video|editar video|photoshop|illustrator|premiere|arquitectura|fotograf)/i,
+  diseno:       /(dise[nñ]o|dise[nñ]ar|autocad|solidworks|revit|render|\b3d\b|edici[oó]n de video|editar video|photoshop|illustrator|premiere|arquitectura|fotograf|creador|creadores|creaci[oó]n de contenido|streaming|modelado|animaci[oó]n)/i,
   portabilidad: /(liviana|liviano|ligera|ligero|delgada|ultraligera|para llevar|llevarla|llevarlo|de viaje|viajo)/i,
 };
 
@@ -71,7 +71,20 @@ const NEG    = /(\bno\b|\bnada de\b|\bsin\b|\bnunca\b|\btampoco\b|\bya no\b)/i;
 export const CHEAPER = /(m[aá]s barat|m[aá]s econ[oó]mic|menos costos|precio m[aá]s bajo|menor precio|no tan car|muy car|se me pasa|econ[oó]mic)/i;
 export const PRICIER = /(m[aá]s potente|m[aá]s poderos|la mejor|el mejor|lo mejor|gama m[aá]s alta|tope de gama|top gama|gama alta|m[aá]s berrac|m[aá]s top|mayor rendimiento)/i;
 
-export const newIntent = () => ({ uses: [], budget: null, cpu: null, gpu: null, ram: null, turn: 0 });
+// Que tipo de equipo pide el cliente. Por defecto, laptop.
+const TIPO_PEDIDO = [
+  [/\bally\b|steam deck|handheld|consola port[aá]til|consola de mano/i, "handheld"],
+  [/all in one|all-in-one|todo en uno|todo-en-uno|\baio\b/i, "aio"],
+  [/\btorre\b|\btorres\b|\btower\b|desktop|pc de escritorio|equipo de escritorio|computador de escritorio|g700/i, "torre"],
+  [/\blaptop\b|\blaptops\b|port[aá]til|portatil|notebook/i, "laptop"],
+];
+
+export function tipoPedido(q) {
+  for (const [re, tipo] of TIPO_PEDIDO) if (re.test(q || "")) return tipo;
+  return null;
+}
+
+export const newIntent = () => ({ uses: [], budget: null, cpu: null, gpu: null, ram: null, tipo: "laptop", turn: 0 });
 
 export function updateIntent(state, message) {
   const st = state || newIntent();
@@ -93,6 +106,9 @@ export function updateIntent(state, message) {
     else st.uses = [...mentioned];                       // ← lo ultimo manda
   }
   if (negated.size) st.uses = st.uses.filter(u => !negated.has(u));
+
+  const t = tipoPedido(msg);
+  if (t) st.tipo = t;
 
   const b = extractBudget(msg);
   if (b) st.budget = b;
@@ -143,6 +159,10 @@ export function powerScore(p) {
   if (/\b(i9|ryzen 9|core ultra 9|core 9[\s-]?\d)/.test(t)) s += 18;
   else if (/\b(i7|ryzen 7|core ultra 7|core 7[\s-]?\d)/.test(t)) s += 12;
   else if (/\b(i5|ryzen 5|core ultra 5|core 5[\s-]?\d)/.test(t)) s += 7;
+  // Sufijo del procesador: HX/HK son chips de escritorio y rinden mas que los H,
+  // y los U/V son de bajo consumo. Por eso una 275HX gana a una 386H.
+  if (/\b\d{3,5}(hx|hk)\b/.test(t)) s += 6;
+  else if (/\b\d{3,5}h\b/.test(t)) s += 3;
   const ram = t.match(/\b(\d{2})\s*gb\b/);
   if (ram) s += Math.min(parseInt(ram[1], 10) / 4, 8);
   return s;
@@ -151,15 +171,27 @@ export function powerScore(p) {
 // Señales ponderadas: una RTX suma poco para diseño y mucho para gaming.
 // Con un peso plano, cualquier TUF empataba con la ProArt en "diseño".
 const AFFINITY = {
-  gaming:       [[/\brog\b|strix|zephyrus/i, 9], [/\btuf\b|gaming/i, 7], [/\brtx\b|\bgtx\b/i, 6],
-                 [/144\s*hz|165\s*hz|240\s*hz/i, 3], [/integrad|iris xe|radeon graphics|intel arc/i, -12]],
-  universidad:  [[/vivobook/i, 5], [/expertbook|zenbook/i, 3], [/\bi5\b|ryzen 5/i, 3], [/\b14\b|\b15\.6\b/i, 2], [/\b17\b/i, -4]],
-  trabajo:      [[/expertbook/i, 9], [/windows 11 pro/i, 5], [/huella|fingerprint/i, 4], [/vivobook|zenbook/i, 3],
-                 [/gaming|\btuf\b|\brog\b|strix|scar/i, -6]],
-  diseno:       [[/proart/i, 12], [/\boled\b/i, 6], [/pantone|dci-p3|calman/i, 5], [/3\.2k|\b3k\b|2\.8k|\bqhd\b/i, 4],
-                 [/\b32\s*gb\b/i, 3], [/\brtx\b/i, 2]],
-  portabilidad: [[/zenbook|vivobook go/i, 7], [/1\.[0-4]\s*kg/i, 6], [/liviana|delgada/i, 4], [/\b13\b|\b14\b/i, 3],
-                 [/\b17\b|gaming/i, -6]],
+  // Gaming: ROG y TUF Gaming. Integrados restan fuerte.
+  gaming:       [[/\brog\b|strix|scar|zephyrus/i, 9], [/\btuf\b|gaming/i, 7], [/\brtx\b|\bgtx\b/i, 6],
+                 [/144\s*hz|165\s*hz|240\s*hz|300\s*hz/i, 3],
+                 [/integrad|iris xe|radeon graphics|intel graphics|intel arc/i, -12]],
+  // Universidad: Vivobook y tambien TUF Gaming ("estudia y juega"). La gama
+  // alta de creador/gaming extremo no es lo que busca un estudiante.
+  universidad:  [[/vivobook/i, 7], [/\btuf\b/i, 6], [/chromebook/i, 5], [/zenbook/i, 3],
+                 [/\bi5\b|ryzen 5|core 5/i, 3], [/\b14\b|\b15\.6\b|\b16\b/i, 2],
+                 [/proart|scar|zephyrus|\b18\b/i, -5]],
+  // Oficina: ExpertBook y Chromebook. Las gaming no van aqui.
+  trabajo:      [[/expertbook/i, 10], [/chromebook/i, 7], [/windows 11 pro/i, 5],
+                 [/huella|fingerprint/i, 4], [/vivobook|zenbook/i, 3],
+                 [/gaming|\btuf\b|\brog\b|strix|scar|zephyrus/i, -8]],
+  // Creadores: ProArt primero, luego Zephyrus y los OLED de alta resolucion.
+  diseno:       [[/proart/i, 12], [/zephyrus/i, 8], [/\boled\b/i, 6],
+                 [/pantone|dci-p3|calman|100% adobe/i, 5],
+                 [/3\.2k|\b3k\b|2\.8k|\bqhd\b|\b4k\b/i, 4],
+                 [/\b32\s*gb\b|\b64\s*gb\b/i, 3], [/\brtx\b/i, 3]],
+  portabilidad: [[/zenbook|vivobook go|expertbook/i, 7], [/1\.[0-4]\s*kg/i, 6],
+                 [/liviana|delgada|ultraligera/i, 4], [/\b13\b|\b14\b/i, 3],
+                 [/\b17\b|\b18\b|gaming/i, -6]],
 };
 
 const price = (p) => parseFloat(p.price) || 0;
@@ -237,12 +269,14 @@ export function selectProducts(catalog, query, intent, n = 3) {
   const dir = sortDirection(q);
 
   // Modelo nombrado: respuesta directa, sin alternativas ni escalera.
-  const named = findNamedModel(catalog, query, n);
+  const named = findNamedModel(catalog.filter(p => (p.tipo || "laptop") === (it.tipo || "laptop")), query, n);
   if (named.length) {
     return { products: named, mode: "ok", budget: it.budget, unmet: [], orderedBy: "modelo", exactModel: true };
   }
 
-  let pool = catalog.filter(p => price(p) > 0);
+  // Solo se recomiendan equipos del tipo pedido (laptop por defecto).
+  const tipo = it.tipo || "laptop";
+  let pool = catalog.filter(p => price(p) > 0 && (p.tipo || "laptop") === tipo);
   const wantsGaming = it.uses.includes("gaming");
   if (wantsGaming) pool = pool.filter(isGamingProduct);
   if (!pool.length) return { products: [], mode: "empty", budget: it.budget, unmet: [] };
@@ -289,7 +323,10 @@ export function selectProducts(catalog, query, intent, n = 3) {
     // Sin esto la escalera metia una ProArt en una consulta de gaming solo
     // porque su precio caia en el escalon del medio.
     const maxS = scored.length ? scored[0].s : 0;
-    const band = maxS > 0 ? scored.filter(r => r.s >= maxS / 2) : scored;
+    // Banda estrecha: solo compiten los que de verdad coinciden con lo pedido.
+    // Con la banda ancha, "laptop con pantalla OLED" mostraba TUF que no son OLED
+    // porque la escalera de precio repartia entre todos los que empataban abajo.
+    const band = maxS > 0 ? scored.filter(r => r.s >= maxS * 0.75) : scored;
     let base = band.slice(0, 8).map(r => r.p);
     if (base.length < n) {
       // Completar SOLO con productos que encajan (puntaje > 0). Si no alcanzan,
