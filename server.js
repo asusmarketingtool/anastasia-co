@@ -5,6 +5,10 @@ import Anthropic from "@anthropic-ai/sdk";
 // ── NUEVO: capa de intencion + seleccion de productos ────────────────
 import { newIntent, updateIntent, selectProducts, extractBudget, isGamingProduct, powerScore } from "./search-co.js";
 
+// Marca de version: se puede consultar en /health y en /catalog/audit.
+// Sirve para confirmar que Railway esta corriendo el archivo que subiste.
+const BUILD = "2026-07-28 · tipos+stock+dominio-raices";
+
 const app = express();
 app.use(express.json());
 
@@ -97,6 +101,8 @@ const offTopicWords = [
   "hack","hackear","piratear","crackear",
   "receta","comida","cocinar","ingredientes",
   "futbol","fútbol","deporte","partido","partidos","mundial","seleccion colombia","selección colombia",
+  "juega colombia","a que hora juega","a qué hora juega","quien juega","quién juega","juegan hoy",
+  "la seleccion","la selección","eliminatorias","liga betplay","el clasico","el clásico","torneo",
   "quien gano","quién ganó","quien ganó","marcador","liga betplay","champions",
   "pelicula","película","serie",
   "música","canción","cancion","letra de",
@@ -116,47 +122,43 @@ function hasWord(text, words) {
 // La lista de temas prohibidos siempre se queda corta. Esto lo invierte:
 // solo pasa lo que habla de laptops, de la compra, o lo que continua una
 // conversacion que ya tiene una laptop sobre la mesa.
-const PALABRAS_DOMINIO = [
-  // producto
-  "laptop","laptops","portatil","portátil","portatiles","portátiles","computador","computadora",
-  "notebook","equipo","equipos","maquina","máquina","pc","asus","rog","tuf","vivobook","zenbook",
-  "torre","torres","escritorio","desktop","mesa","aio","monitor","monitores","pantalla externa",
-  "consola","consolas","ally","handheld","todo en uno","all in one",
-  "expertbook","proart","strix","scar","zephyrus","ally",
+const RAICES_DOMINIO = [
+  // producto y marcas
+  "laptop","portatil","portátil","notebook","computador","computadora","equipo","maquina","máquina",
+  "asus","rog","tuf","vivobook","zenbook","expertbook","proart","strix","scar","zephyrus","ally",
+  "torre","escritorio","desktop","aio","todo en uno","monitor","consola","handheld","chromebook",
   // usos
-  "gaming","gamer","jugar","juego","juegos","universidad","estudiar","estudio","estudiante","colegio",
-  "trabajo","trabajar","oficina","negocio","empresa","diseño","diseno","editar","edicion","edición",
-  "programar","programacion","programación","autocad","photoshop","illustrator","premiere","solidworks",
-  "revit","render","excel","office","word","zoom","clases","teletrabajo","arquitectura","ingenieria",
+  "gam","jug","jueg","universi","estudi","colegi","carrera","tesis","clase","trabaj","oficin","negoci",
+  "empres","teletrabaj","diseñ","disen","edit","edici","render","program","autocad","photoshop",
+  "illustrator","premiere","solidworks","revit","excel","office","word","zoom","arquitect","ingenier",
+  "creador","contenido","streaming","modelad","animac",
   // specs
-  "ram","memoria","procesador","cpu","disco","almacenamiento","ssd","pantalla","pulgadas","resolucion",
-  "resolución","grafica","gráfica","graficos","gráficos","gpu","rtx","gtx","nvidia","radeon","intel",
-  "amd","ryzen","core","i3","i5","i7","i9","teclado","bateria","batería","camara","cámara","puerto",
-  "puertos","hdmi","usb","wifi","bluetooth","peso","pesa","huella","oled","hz","refresco","tasa","taza",
-  "refresh","specs","especificaciones","ficha","caracteristicas","características","gb","tb","nucleos",
-  "núcleos","windows","sistema operativo",
+  "ram","memoria","procesador","cpu","chip","nucleo","núcleo","disco","almacen","ssd","nvme","pantalla",
+  "pulgada","resoluc","grafic","gráfic","gpu","rtx","gtx","nvidia","radeon","intel","amd","ryzen","core",
+  "i3","i5","i7","i9","teclad","bateria","batería","autonom","camara","cámara","webcam","puerto","hdmi",
+  "usb","thunderbolt","wifi","wi-fi","bluetooth","peso","pes","liger","livian","huella","oled","hz",
+  "refresc","tasa","taza","refresh","spec","especificac","caracterist","ficha","gb","tb","windows",
+  "sistema operativo","ampliab","expandib",
   // compra
-  "precio","precios","cuesta","vale","barata","barato","economica","económica","economico","económico",
-  "presupuesto","millones","millon","millón","lucas","oferta","ofertas","descuento","promocion",
-  "promoción","comprar","compra","garantia","garantía","envio","envío","entrega","pago","pagar",
-  "cuotas","financiacion","financiación","stock","disponible","disponibilidad","tienda","asesor",
-  // intencion de busqueda
-  "recomienda","recomiendas","recomiendame","recomiéndame","recomendar","recomendacion","recomendación",
-  "sugiere","sugieres","opciones","opcion","opción","muestrame","muéstrame","muestra","tienes","tienen",
-  "necesito","busco","quiero","potente","liviana","liviano","ligera","ligero","gama",
-  "escoger","elegir","escojo","elijo","decidir","comparar","diferencia",
-  "tengan","tenga","haya","hay","manejan","maneja","venden","vende",
-  "pese","pesada","pesado","tamaño","tamano","peso",
-  // juegos: "para valorant" no trae ninguna palabra de laptop
-  "valorant","fortnite","lol","league","warzone","cod","gta","minecraft","dota","csgo",
-  "fifa","roblox","apex","overwatch","elden","genshin","sims","tibia","wow",
-  // envio y pago escritos de otras formas
-  "envios","envíos","enviar","despachan","despacho","domicilio","transportadora",
-  "tarjeta","cuota","efectivo","contraentrega","addi","sistecredito",
+  "precio","cuest","vale","barat","economic","económic","asequibl","accesibl","presupuest","millon",
+  "luca","ofert","descuent","promoc","rebaj","compr","garant","envi","entreg","despach","domicilio",
+  "pag","cuota","financiac","stock","disponib","tienda","asesor","factur",
+  // intencion
+  "recomend","sugier","opcion","opción","muestr","muéstr","tien","teng","hay","necesit","busc","quier",
+  "escog","eleg","elij","decid","compar","diferenc","potent","gama","mejor","peor","sirve","aguanta",
+  // juegos frecuentes
+  "valorant","fortnite","minecraft","warzone","dota","csgo","fifa","roblox","apex","overwatch","elden",
+  "genshin","cyberpunk","gta","sims","tarkov","rocket","forza",
 ];
 
 function esDelDominio(q) {
-  return hasWord(q, PALABRAS_DOMINIO);
+  // La raiz tiene que coincidir con el ARRANQUE de una palabra. Con coincidencia
+  // suelta, "soledad" contenia "oled" y colaba una consulta de literatura.
+  const texto = normTxt(q).toLowerCase();
+  const palabras = texto.split(/[^a-z0-9áéíóúñ]+/).filter(Boolean);
+  return RAICES_DOMINIO.some(r =>
+    r.includes(" ") ? texto.includes(r) : palabras.some(w => w.startsWith(r))
+  );
 }
 
 const SALUDOS = /^(hola|buenas|buenos d[ií]as|buenas tardes|buenas noches|hey|que tal|qué tal|saludos|hi|hello)[\s!.,¡]*$/i;
@@ -393,7 +395,7 @@ function parseSpecs(p) {
   // Respaldo por texto libre para los cinco datos de la tarjeta.
   const d = " " + normTxt(p.descriptionFull || p.description || "") + " ";
   const pick = (re) => { const m = d.match(re); return m ? m[0].trim() : ""; };
-  if (!out.cpu)      out.cpu      = pick(/(intel\s+)?core\s+(ultra\s+)?[i]?\d[\w-]*\s*\d{0,4}\w*|(amd\s+)?ryzen[\w\s]{0,14}\d{3,4}\w*/i);
+  if (!out.cpu)      out.cpu      = pick(/(intel\s+)?core\s+(ultra\s+)?[i]?\d[\w-]*\s*\d{0,4}\w*|(amd\s+)?ryzen[\w\s]{0,14}\d{3,4}\w*|(amd\s+)?ryzen\s+z\d[\w\s]{0,10}|snapdragon[\w\s]{0,14}/i);
   if (!out.ram)      out.ram      = pick(/\d{1,3}\s?gb\s+(?:lp)?ddr\d\w*/i);
   if (!out.ssd)      out.ssd      = pick(/\d+\s?(gb|tb)[\w\s.]{0,18}ssd/i);
   if (!out.pantalla) out.pantalla = pick(/\d{2}(\.\d)?\s*("|pulg)[\w\s.+:x]{0,28}/i);
@@ -662,7 +664,7 @@ app.post("/webhook/freshchat", async (req, res) => {
 });
 
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", country: "CO", products: catalog.length, conversations: Object.keys(conversations).length });
+  res.json({ status: "ok", version: BUILD, country: "CO", products: catalog.length, conversations: Object.keys(conversations).length });
 });
 
 // Radiografia del catalogo real, para revisarlo como eShop manager.
@@ -697,6 +699,7 @@ app.get("/catalog/audit", (req, res) => {
   catalogoExcluidos.forEach(e => { porRazon[e.razon] = (porRazon[e.razon] || 0) + 1; });
 
   res.json({
+    version: BUILD,
     total_en_catalogo: catalog.length,
     por_tipo: catalog.reduce((a, p) => { const t = p.tipo || "laptop"; a[t] = (a[t] || 0) + 1; return a; }, {}),
     excluidos: {
@@ -856,10 +859,10 @@ app.get("/anastasia", async (req, res) => {
     // ── Relevancia: si no habla de laptops ni continua la conversacion,
     // no entra. Esto es lo que impide usar a AnastasIA como una IA general.
     const hayContexto = !!(session?.selectedProduct || session?.shownProducts?.length);
-    const hayConversacion = !!(session?.history?.length);
-    if (!esDelDominio(q) && !SALUDOS.test(q.trim()) && !isFollowUp(q) &&
-        !(hayConversacion && AFIRMACIONES.test(q.trim())) &&
-        !(hayContexto && esPreguntaCorta(q))) {
+    // Si ya hay laptops en pantalla, cualquier mensaje corto es parte de la
+    // conversacion: "pero son los mas baratos?" no puede quedar bloqueado.
+    const cortoConContexto = hayContexto && q.trim().split(/\s+/).length <= 14;
+    if (!esDelDominio(q) && !SALUDOS.test(q.trim()) && !isFollowUp(q) && !cortoConContexto) {
       console.log(`🛡️ Fuera de dominio: "${query.slice(0, 60)}"`);
       trackWeb({ session_id: sessionId || ip, message_type: "fuera_de_dominio",
         query: query.slice(0, 500), bot_message: "redirigido", products_count: 0 });
@@ -1186,7 +1189,21 @@ REGLAS:
     // tambien son seguimiento: se juzgan con su ficha, no abren busqueda nueva.
     const usoSobreElegida = !!(session?.selectedProduct && PREGUNTA_USO.test(q));
 
-    if (isFollowUp(q) || isModelPick || specQuestion || usoSobreElegida) {
+    // Sin laptops en pantalla, las preguntas comparativas ("cual es la mejor")
+    // son una busqueda, no un seguimiento. Solo las de informacion general
+    // (envio, garantia, pago, saludos) se responden sin contexto.
+    const infoGeneral = hasWord(q, [
+      "cuanto tarda","cuánto tarda","cuanto demora","tiempo de entrega","tiempo de envio","tiempo de envío",
+      "cuando llega","cuándo llega","dias habiles","días hábiles","envio","envío","envian","entrega","entregan",
+      "domicilio","despacho","despachan","garantia","garantía","formas de pago","medios de pago","puedo pagar",
+      "aceptan","cuotas","financiacion","financiación","tarjeta de credito","addi","sistecredito","pse",
+      "contraentrega","checkout","como compro","cómo compro","como pago","cómo pago","proceso de compra",
+      "factura","facturacion","facturación","gracias","muchas gracias","listo","perfecto","de una","vale",
+      "entendido","buenisimo","buenísimo","chevere","chévere","bacano",
+    ]);
+    const esSeguimiento = hayContexto ? isFollowUp(q) : infoGeneral;
+
+    if (esSeguimiento || isModelPick || specQuestion || usoSobreElegida) {
       const tFollow = Date.now();
       const shown = session?.shownProducts || [];
       const picked = session?.selectedProduct;
