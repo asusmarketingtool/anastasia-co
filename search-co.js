@@ -87,13 +87,13 @@ const TIPO_PEDIDO = [
 
 // Series del menu del sitio ASUS Colombia.
 export const SERIES = {
-  proart:     /\bproart\b|studiobook/i,
-  zenbook:    /\bzenbook\b/i,
-  vivobook:   /\bvivobook\b/i,
-  expertbook: /\bexpertbook\b/i,
-  chromebook: /\bchromebook\b/i,
+  proart:     /\bproarts?\b|studiobooks?/i,
+  zenbook:    /\bzenbooks?\b/i,
+  vivobook:   /\bvivobooks?\b/i,
+  expertbook: /\bexpertbooks?\b/i,
+  chromebook: /\bchromebooks?\b/i,
   rog:        /\brog\b|strix|\bscar\b|zephyrus/i,
-  tuf:        /\btuf\b/i,
+  tuf:        /\btufs?\b/i,
 };
 
 export function seriePedida(q) {
