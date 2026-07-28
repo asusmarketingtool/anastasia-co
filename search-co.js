@@ -116,7 +116,14 @@ export function sortDirection(message) {
 }
 
 // ── Clasificacion de producto ────────────────────────────────────────
-const txt = (p) => `${p.title} ${p.description} ${p.category || ""} ${p.model || ""}`.toLowerCase();
+// El feed trae ® y ™ dentro de los specs ("RTX™ 5090"). Sin quitarlos, el
+// filtro de gaming y el orden por rendimiento leen el catalogo a ciegas.
+const txt = (p) =>
+  `${p.title || ""} ${p.descriptionFull || p.description || ""} ${p.category || ""} ${p.model || ""}`
+    .replace(/[\u00ae\u2122\u00a9]/g, " ")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
 
 export function isGamingProduct(p) {
   const t = txt(p);
@@ -147,7 +154,8 @@ const AFFINITY = {
   gaming:       [[/\brog\b|strix|zephyrus/i, 9], [/\btuf\b|gaming/i, 7], [/\brtx\b|\bgtx\b/i, 6],
                  [/144\s*hz|165\s*hz|240\s*hz/i, 3], [/integrad|iris xe|radeon graphics|intel arc/i, -12]],
   universidad:  [[/vivobook/i, 5], [/expertbook|zenbook/i, 3], [/\bi5\b|ryzen 5/i, 3], [/\b14\b|\b15\.6\b/i, 2], [/\b17\b/i, -4]],
-  trabajo:      [[/expertbook/i, 9], [/windows 11 pro/i, 5], [/huella|fingerprint/i, 4], [/vivobook|zenbook/i, 3]],
+  trabajo:      [[/expertbook/i, 9], [/windows 11 pro/i, 5], [/huella|fingerprint/i, 4], [/vivobook|zenbook/i, 3],
+                 [/gaming|\btuf\b|\brog\b|strix|scar/i, -6]],
   diseno:       [[/proart/i, 12], [/\boled\b/i, 6], [/pantone|dci-p3|calman/i, 5], [/3\.2k|\b3k\b|2\.8k|\bqhd\b/i, 4],
                  [/\b32\s*gb\b/i, 3], [/\brtx\b/i, 2]],
   portabilidad: [[/zenbook|vivobook go/i, 7], [/1\.[0-4]\s*kg/i, 6], [/liviana|delgada/i, 4], [/\b13\b|\b14\b/i, 3],
@@ -204,7 +212,7 @@ export function findNamedModel(catalog, query, max = 3) {
   const scored = catalog.map(p => {
     const modelNorm = (p.model || "").toLowerCase().replace(/[^a-z0-9]/g, "");
     const partNorm  = (p.partNumber || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    const title     = (p.title || "").toLowerCase();
+    const title     = (p.title || "").replace(/[\u00ae\u2122\u00a9]/g, " ").toLowerCase();
     let s = 0;
     if (modelNorm.length >= 5 && qNorm.includes(modelNorm)) s += 10;
     if (partNorm.length >= 6 && qNorm.includes(partNorm)) s += 10;
@@ -283,8 +291,10 @@ export function selectProducts(catalog, query, intent, n = 3) {
     const maxS = scored.length ? scored[0].s : 0;
     const band = maxS > 0 ? scored.filter(r => r.s >= maxS / 2) : scored;
     let base = band.slice(0, 8).map(r => r.p);
-    if (base.length < n) {                       // completar SIN perder el orden por afinidad
-      for (const r of scored) { if (base.length >= n) break; if (!base.includes(r.p)) base.push(r.p); }
+    if (base.length < n) {
+      // Completar SOLO con productos que encajan (puntaje > 0). Si no alcanzan,
+      // se devuelven menos tarjetas: una que sirve vale mas que tres de relleno.
+      for (const r of scored) { if (base.length >= n) break; if (r.s > 0 && !base.includes(r.p)) base.push(r.p); }
     }
     ranked = priceLadder(base, n);
   }
