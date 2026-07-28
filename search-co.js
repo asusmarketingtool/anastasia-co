@@ -1,3 +1,8 @@
+// ═══════════════════════════════════════════════════════════════
+//  ANASTASIA — COLOMBIA  ·  modulo de busqueda
+//  repo: anastasia-co   ·   va junto con server.js
+// ═══════════════════════════════════════════════════════════════
+
 // search-co.js — capa de intencion + seleccion de productos para AnastasIA CO.
 // Unico lugar que decide QUE 3 laptops ve el cliente. server.js solo redacta.
 //
