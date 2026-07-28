@@ -211,7 +211,9 @@ const AFFINITY = {
                  [/integrad|iris xe|radeon graphics|intel graphics|intel arc/i, -12]],
   // Universidad: Vivobook y tambien TUF Gaming ("estudia y juega"). La gama
   // alta de creador/gaming extremo no es lo que busca un estudiante.
-  universidad:  [[/vivobook/i, 8], [/\btuf\b/i, 6], [/zenbook/i, 6], [/chromebook/i, 5],
+  // Estudiantes: Vivobook y TUF lideran (menu del sitio), pero el Zenbook entra
+  // como la opcion premium del escalon alto para quien puede pagarla.
+  universidad:  [[/vivobook/i, 8], [/zenbook/i, 8], [/\btuf\b/i, 6], [/chromebook/i, 5],
                  [/\bi5\b|ryzen 5|core 5/i, 3], [/\b14\b|\b15\.6\b|\b16\b/i, 2],
                  [/proart|scar|zephyrus|\b18\b/i, -5]],
   // Oficina: ExpertBook y Chromebook. Las gaming no van aqui.
