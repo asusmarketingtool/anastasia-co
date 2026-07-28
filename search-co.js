@@ -58,9 +58,10 @@ export function extractBudget(text) {
 export const USE_PATTERNS = {
   gaming:       /(gaming|gamer|jugar|juego|juegos|videojuego|fortnite|valorant|\blol\b|\bgta\b|warzone|\bcod\b|minecraft|dota|csgo|fifa|\bea fc\b)/i,
   universidad:  /(universidad|\bla u\b|\buni\b|estudiar|estudio|estudiante|carrera|tesis|colegio|clases|programar|programaci[oó]n|ingenier[ií]a)/i,
-  trabajo:      /(trabajo|trabajar|oficina|ofim[aá]tica|excel|contabilidad|negocio|empresa|teletrabajo|home office|facturaci[oó]n)/i,
+  trabajo:      /(trabajo|trabajar|oficina|ofim[aá]tica|excel|contabilidad|negocio|empresa|teletrabajo|home office|facturaci[oó]n|profesional|profesionales|ejecutiv|consultor|trabajo remoto|remoto|viajo por trabajo|reuniones)/i,
   diseno:       /(dise[nñ]o|dise[nñ]ar|autocad|solidworks|revit|render|\b3d\b|edici[oó]n de video|editar video|photoshop|illustrator|premiere|arquitectura|fotograf|creador|creadores|creaci[oó]n de contenido|streaming|modelado|animaci[oó]n)/i,
-  portabilidad: /(liviana|liviano|ligera|ligero|delgada|ultraligera|para llevar|llevarla|llevarlo|de viaje|viajo)/i,
+  portabilidad: /(liviana|liviano|ligera|ligero|delgada|delgado|ultraligera|ultradelgada|para llevar|llevarla|llevarlo|de viaje|viajo|premium|elegante|bater[ií]a que dure|larga duraci[oó]n|todo el d[ií]a)/i,
+  hogar:        /(para (la )?casa|para el hogar|uso personal|d[ií]a a d[ií]a|dia a dia|familiar|para la familia|uso general|b[aá]sic[oa]|navegar|netflix|series y peliculas|redes sociales|tareas del hogar)/i,
 };
 
 const CHANGE = /(en realidad|realmente|mejor|ya no|cambi[eé]|cambio de idea|olvida|olv[ií]date|en vez de|m[aá]s bien|pensandolo bien|pens[aá]ndolo bien|la verdad|no es para|no ser[aá] para)/i;
@@ -79,12 +80,32 @@ const TIPO_PEDIDO = [
   [/\blaptop\b|\blaptops\b|port[aá]til|portatil|notebook/i, "laptop"],
 ];
 
+// Series del menu del sitio ASUS Colombia.
+export const SERIES = {
+  proart:     /\bproart\b|studiobook/i,
+  zenbook:    /\bzenbook\b/i,
+  vivobook:   /\bvivobook\b/i,
+  expertbook: /\bexpertbook\b/i,
+  chromebook: /\bchromebook\b/i,
+  rog:        /\brog\b|strix|\bscar\b|zephyrus/i,
+  tuf:        /\btuf\b/i,
+};
+
+export function seriePedida(q) {
+  for (const [nombre, re] of Object.entries(SERIES)) if (re.test(q || "")) return nombre;
+  return null;
+}
+
+export function esDeSerie(p, serie) {
+  return SERIES[serie] ? SERIES[serie].test(`${p.title || ""} ${p.model || ""}`) : false;
+}
+
 export function tipoPedido(q) {
   for (const [re, tipo] of TIPO_PEDIDO) if (re.test(q || "")) return tipo;
   return null;
 }
 
-export const newIntent = () => ({ uses: [], budget: null, cpu: null, gpu: null, ram: null, tipo: "laptop", turn: 0 });
+export const newIntent = () => ({ uses: [], budget: null, cpu: null, gpu: null, ram: null, tipo: "laptop", serie: null, turn: 0 });
 
 export function updateIntent(state, message) {
   const st = state || newIntent();
@@ -109,6 +130,10 @@ export function updateIntent(state, message) {
 
   const t = tipoPedido(msg);
   if (t) st.tipo = t;
+
+  const serie = seriePedida(msg);
+  if (serie) st.serie = serie;
+  else if (CHANGE.test(msg) || mentioned.size) st.serie = null;   // cambio de tema: se suelta la serie
   else if (mentioned.size) st.tipo = "laptop";   // uso nuevo sin decir tipo → laptop
 
   const b = extractBudget(msg);
@@ -186,21 +211,25 @@ const AFFINITY = {
                  [/integrad|iris xe|radeon graphics|intel graphics|intel arc/i, -12]],
   // Universidad: Vivobook y tambien TUF Gaming ("estudia y juega"). La gama
   // alta de creador/gaming extremo no es lo que busca un estudiante.
-  universidad:  [[/vivobook/i, 7], [/\btuf\b/i, 6], [/chromebook/i, 5], [/zenbook/i, 3],
+  universidad:  [[/vivobook/i, 8], [/\btuf\b/i, 6], [/zenbook/i, 6], [/chromebook/i, 5],
                  [/\bi5\b|ryzen 5|core 5/i, 3], [/\b14\b|\b15\.6\b|\b16\b/i, 2],
                  [/proart|scar|zephyrus|\b18\b/i, -5]],
   // Oficina: ExpertBook y Chromebook. Las gaming no van aqui.
-  trabajo:      [[/expertbook/i, 10], [/chromebook/i, 7], [/windows 11 pro/i, 5],
-                 [/huella|fingerprint/i, 4], [/vivobook|zenbook/i, 3],
+  trabajo:      [[/expertbook/i, 10], [/zenbook/i, 8], [/chromebook/i, 7], [/windows 11 pro/i, 5],
+                 [/vivobook/i, 5], [/huella|fingerprint/i, 4], [/1\.[0-4]\s*kg|liviana|delgada/i, 3],
                  [/gaming|\btuf\b|\brog\b|strix|scar|zephyrus/i, -8]],
   // Creadores: ProArt primero, luego Zephyrus y los OLED de alta resolucion.
-  diseno:       [[/proart/i, 12], [/zephyrus/i, 8], [/\boled\b/i, 6],
+  diseno:       [[/proart/i, 12], [/zephyrus/i, 8], [/\boled\b/i, 6], [/zenbook/i, 5],
                  [/pantone|dci-p3|calman|100% adobe/i, 5],
                  [/3\.2k|\b3k\b|2\.8k|\bqhd\b|\b4k\b/i, 4],
                  [/\b32\s*gb\b|\b64\s*gb\b/i, 3], [/\brtx\b/i, 3]],
-  portabilidad: [[/zenbook|vivobook go|expertbook/i, 7], [/1\.[0-4]\s*kg/i, 6],
-                 [/liviana|delgada|ultraligera/i, 4], [/\b13\b|\b14\b/i, 3],
-                 [/\b17\b|\b18\b|gaming/i, -6]],
+  // Para el Hogar: Zenbook, Vivobook y ProArt segun el menu del sitio.
+  hogar:        [[/zenbook/i, 8], [/vivobook/i, 8], [/proart/i, 4], [/\boled\b/i, 3],
+                 [/expertbook|chromebook/i, 2], [/gaming|\btuf\b|\brog\b|strix|scar/i, -4]],
+  portabilidad: [[/zenbook/i, 12], [/expertbook|vivobook go/i, 7], [/1\.[0-4]\s*kg/i, 6],
+                 [/\boled\b/i, 4], [/liviana|delgada|ultraligera|ultradelgad/i, 4],
+                 [/\b\d{2}\s*wh\b|carga r[aá]pida/i, 3], [/\b13\b|\b14\b/i, 3],
+                 [/\b17\b|\b18\b|gaming|\btuf\b|\brog\b/i, -8]],
 };
 
 const price = (p) => parseFloat(p.price) || 0;
@@ -293,6 +322,16 @@ export function selectProducts(catalog, query, intent, n = 3) {
   if (wantsGaming) pool = pool.filter(isGamingProduct);
   if (!pool.length) return { products: [], mode: "empty", budget: it.budget, unmet: [] };
 
+  // Serie puntual (Zenbook, ProArt, ExpertBook...): si no hay de esa linea,
+  // se dice con honestidad en vez de devolver otra cosa.
+  if (it.serie) {
+    const deLaSerie = pool.filter(p => esDeSerie(p, it.serie));
+    if (!deLaSerie.length) {
+      return { products: [], mode: "serie_sin_stock", serie: it.serie, budget: it.budget, unmet: [] };
+    }
+    pool = deLaSerie;
+  }
+
   // Solo ofertas: se filtra y se ordena por mayor descuento.
   if (SOLO_OFERTA.test(q)) {
     const conOferta = pool.filter(p => pctDescuento(p) > 0);
@@ -349,6 +388,12 @@ export function selectProducts(catalog, query, intent, n = 3) {
     // Con la banda ancha, "laptop con pantalla OLED" mostraba TUF que no son OLED
     // porque la escalera de precio repartia entre todos los que empataban abajo.
     const band = maxS > 0 ? scored.filter(r => r.s >= maxS * 0.75) : scored;
+    // Si hay un ganador claro por afinidad (muy por encima del segundo), va de
+    // primero aunque no sea el mas barato: en "premium delgada" el cliente
+    // quiere ver la Zenbook, no la mas economica que tambien encaja.
+    const dominante = (scored.length > 1 && scored[0].s >= scored[1].s * 1.25 && scored[0].s > 0)
+      ? scored[0].p : null;
+
     let base = band.slice(0, 8).map(r => r.p);
     if (base.length < n) {
       // Completar SOLO con productos que encajan (puntaje > 0). Si no alcanzan,
@@ -356,6 +401,9 @@ export function selectProducts(catalog, query, intent, n = 3) {
       for (const r of scored) { if (base.length >= n) break; if (r.s > 0 && !base.includes(r.p)) base.push(r.p); }
     }
     ranked = priceLadder(base, n);
+    if (dominante && ranked.includes(dominante) && ranked[0] !== dominante) {
+      ranked = [dominante, ...ranked.filter(p => p !== dominante)];
+    }
   }
   // orderedBy le dice al prompt que puede afirmar. En el pantallazo el bot decia
   // "ordenadas de mayor a menor rendimiento" mientras ordenaba por precio.
