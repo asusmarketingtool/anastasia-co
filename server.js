@@ -1232,7 +1232,7 @@ REGLAS:
         ? `\nEl cliente YA ELIGIO esta laptop: ${picked.title} — ${picked.specs || ""}.${picked.ficha ? `\nFICHA COMPLETA de esa laptop (usala para responder preguntas de specs): ${picked.ficha}` : ""} Si pregunta por un spec de ella (RAM, procesador, disco, pantalla, grafica, teclado), respondele con el valor exacto de esa ficha. Si el dato NO aparece ahi, dilo con honestidad y ofrece que un asesor lo confirme. NO muestres otras laptops.`
         : "";
       const shownList = shown.length
-        ? `\nLaptops que el cliente YA vio en esta conversacion (puedes referirte a ellas por nombre):\n${shown.map((p, i) => `${i+1}. ${p.title} — ${p.specs || ""}${p.ficha ? ` || FICHA: ${p.ficha}` : ""}`).join("\n")}`
+        ? `\nLaptops que el cliente YA vio en esta conversacion (puedes referirte a ellas por nombre):\n${shown.map((p, i) => `${i+1}. ${p.nombreTarjeta || p.title} (en la tarjeta aparece asi) — ${p.specs || ""}${p.ficha ? ` || FICHA: ${p.ficha}` : ""}`).join("\n")}`
         : "";
       const histMsgs = session?.history?.slice(-MAGENTO_HISTORY_TURNS) || [];
 
@@ -1245,7 +1245,9 @@ REGLAS:
 El cliente ya vio recomendaciones de laptops y ahora hace una pregunta de seguimiento (envío, garantía, pago, o cuál elegir).${pickedLine}${shownList}
 REGLAS:
 - Responde SOLO la pregunta, en 1-2 frases cortas, español neutro y profesional, sin jerga.
-- Si el cliente pide COMPARAR o pregunta las diferencias entre las que ya vio: comparalas SOLO entre esas, por nombre, usando la lista de arriba. Nombra 2 o 3 diferencias concretas (procesador, pantalla, RAM, almacenamiento, precio) y cierra sugiriendo cual le conviene segun su uso. NO menciones ninguna laptop que no este en esa lista. Aqui puedes usar hasta 4 frases.
+- Al comparar, usa SOLO los datos que aparecen en la lista de arriba. Si una laptop no dice OLED, tactil o dedicada, NO se lo atribuyas. Si dos comparten un dato, dilo tal cual ("las dos traen 16GB"). Inventar una caracteristica es peor que no mencionarla.
+- Nombra las laptops EXACTAMENTE como aparecen en la tarjeta (el nombre entre parentesis de la lista de arriba). NUNCA uses codigos internos tipo "UM3406KA" o "FX607VJB": el cliente no los ve en la tarjeta y no sabria a cual te refieres.
+- Si el cliente pide COMPARAR o pregunta las diferencias entre las que ya vio: comparalas SOLO entre esas, por nombre, usando la lista de arriba. Nombra 2 o 3 diferencias concretas (procesador, pantalla, RAM, almacenamiento, precio) y cierra sugiriendo cual le conviene segun su uso. Refierete a cada laptop por el NOMBRE que el cliente vio en la tarjeta, nunca por un codigo interno de modelo que no aparece en pantalla. NO menciones ninguna laptop que no este en esa lista. Aqui puedes usar hasta 4 frases.
 - ANTES de decir que no tienes un dato (teclado, bateria, puertos, peso, sistema operativo, que trae en la caja), BUSCALO en la FICHA COMPLETA de arriba. Solo di que no lo tienes si de verdad no aparece ahi. Si aparece, responde con el texto exacto de la ficha.
 - NO listes tarjetas de producto nuevas. Si el cliente pregunta cual le conviene o elige una de las que vio, puedes mencionarla POR NOMBRE (de la lista de arriba) y dar un criterio breve, pero sin reabrir busqueda.
 - Si pregunta por envíos: en Colombia la entrega suele ser 2-3 días hábiles según ciudad.
@@ -1558,7 +1560,7 @@ REGLAS (sin comillas dobles en ningun valor de texto):
   - NUNCA digas que una linea o modelo "no esta en stock", "no lo tenemos" o "esta agotado". Tu no sabes que hay en bodega: eso lo decide el sistema y te lo diria explicitamente. Si el cliente pidio algo puntual y los productos que te pasaron son otros, presenta lo que hay como alternativa SIN afirmar que lo otro no existe.
   - NUNCA afirmes un orden distinto al que te indicaron arriba. Si te dijeron que van de menor a mayor precio, no digas que van por rendimiento.
   - HONESTIDAD: si el cliente pidio algo especifico (ej: procesador i9, 32GB de RAM, una GPU puntual, una pulgada exacta) y NINGUN producto del catalogo lo cumple, NO finjas que si. Reconoce con naturalidad que ahora mismo no tienes exactamente eso en la tienda y ofrece la alternativa mas cercana explicando por que sirve. Sé honesto pero positivo, nunca inventes que un producto tiene un spec que no tiene.
-- "title_display": nombre corto del producto, max 40 caracteres.
+- "title_display": nombre corto del producto, max 40 caracteres. Si dos productos de esta lista tienen un nombre parecido (por ejemplo "Zenbook A14" y "Zenbook 14"), agregale a cada uno el dato que los distingue (el modelo, el procesador o la pantalla) para que el cliente pueda diferenciarlos de un vistazo.
 - Specs clave extraidas de la descripcion (cada una corta, sin la etiqueta):
   - "cpu": procesador. Ej: Ryzen 7 260  o  Core Ultra 7 258V
   - "ram": memoria. Ej: 16GB DDR5  o  32GB LPDDR5X
@@ -1645,6 +1647,57 @@ REGLAS (sin comillas dobles en ningun valor de texto):
       };
     });
 
+    // Cuando dos tarjetas son de la misma linea ("Zenbook 14" y "Zenbook 14
+    // OLED"), el cliente no las distingue. Se les agrega el codigo de modelo.
+    const lineaCorta = (t) => (t || "").toLowerCase().replace(/asus|port[aá]til|notebook/g, "")
+      .replace(/[^a-z0-9]/g, "").slice(0, 9);
+    const cuentaLinea = {};
+    mergedItems.forEach(it => { const k = lineaCorta(it.TITLE_DISPLAY); cuentaLinea[k] = (cuentaLinea[k] || 0) + 1; });
+    mergedItems.forEach(it => {
+      if (cuentaLinea[lineaCorta(it.TITLE_DISPLAY)] < 2) return;
+      const src = productsToSend.find(p => p.title === it.TITLE);
+      const modelo = String(src?.model || "").split("-")[0].trim();
+      if (modelo && modelo.length >= 4 && !it.TITLE_DISPLAY.toUpperCase().includes(modelo.toUpperCase())) {
+        it.TITLE_DISPLAY = `${it.TITLE_DISPLAY} ${modelo}`.slice(0, 50);
+      }
+    });
+
+    // Dos productos de la misma linea pueden quedar con el mismo nombre visible
+    // ("ASUS Zenbook 14" y "ASUS Zenbook 14"). Ahi se les agrega el codigo de
+    // modelo, que es lo unico que los distingue para el cliente.
+    {
+      const norm = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const cuenta = {};
+      mergedItems.forEach(it => { const k = norm(it.TITLE_DISPLAY); cuenta[k] = (cuenta[k] || 0) + 1; });
+      mergedItems.forEach(it => {
+        if (cuenta[norm(it.TITLE_DISPLAY)] > 1) {
+          const src = productsToSend.find(p => p.title === it.TITLE);
+          const codigo = (src?.model || src?.partNumber || "").split(/[-\s]/)[0];
+          if (codigo && !it.TITLE_DISPLAY.toUpperCase().includes(codigo.toUpperCase())) {
+            it.TITLE_DISPLAY = `${it.TITLE_DISPLAY} ${codigo}`.slice(0, 50);
+          }
+        }
+      });
+    }
+
+    // Dos tarjetas con nombre casi igual ("Zenbook A14" y "Zenbook 14") dejan
+    // al cliente sin forma de distinguirlas. Si pasa, se agrega el modelo.
+    (() => {
+      const clave = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9 ]/g, "")
+        .split(/\s+/).filter(Boolean).slice(0, 2).join(" ");
+      const cuenta = {};
+      mergedItems.forEach(it => { const k = clave(it.TITLE_DISPLAY); cuenta[k] = (cuenta[k] || 0) + 1; });
+      mergedItems.forEach(it => {
+        if (cuenta[clave(it.TITLE_DISPLAY)] < 2) return;
+        const src = productsToSend.find(p => p.title === it.TITLE);
+        // Solo la parte base del modelo: UX3407QA en vez de UX3407QA-QD232W
+        const modelo = (src?.model || src?.partNumber || "").split(/[\s,-]/)[0];
+        if (modelo && !it.TITLE_DISPLAY.toLowerCase().includes(modelo.toLowerCase().slice(0, 6))) {
+          it.TITLE_DISPLAY = `${it.TITLE_DISPLAY.slice(0, 32).trim()} · ${modelo.slice(0, 14)}`;
+        }
+      });
+    })();
+
     console.log(`✅ AnastasIA CO devuelve ${mergedItems.length} productos · Total: ${Date.now() - tStart}ms`);
 
     trackWeb({
@@ -1660,7 +1713,7 @@ REGLAS (sin comillas dobles en ningun valor de texto):
       session.shownProducts = mergedItems.map(it => {
         const src = productsToSend.find(p => p.title === it.TITLE);
         return {
-          title: it.TITLE, model: src?.model || "",
+          title: it.TITLE, nombreTarjeta: it.TITLE_DISPLAY, model: src?.model || "",
           specs: [it.CPU, it.RAM, it.SSD, it.PANTALLA, it.GPU, it.TECLADO_ES].filter(Boolean).join(" | ") || it.SPECS,
           ficha: (src?.descriptionFull || src?.description || "").slice(0, 500),
         };
