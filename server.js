@@ -111,6 +111,53 @@ function hasWord(text, words) {
   });
 }
 
+// ── Filtro de relevancia ─────────────────────────────────────────────
+// La lista de temas prohibidos siempre se queda corta. Esto lo invierte:
+// solo pasa lo que habla de laptops, de la compra, o lo que continua una
+// conversacion que ya tiene una laptop sobre la mesa.
+const PALABRAS_DOMINIO = [
+  // producto
+  "laptop","laptops","portatil","portátil","portatiles","portátiles","computador","computadora",
+  "notebook","equipo","equipos","maquina","máquina","pc","asus","rog","tuf","vivobook","zenbook",
+  "expertbook","proart","strix","scar","zephyrus","ally",
+  // usos
+  "gaming","gamer","jugar","juego","juegos","universidad","estudiar","estudio","estudiante","colegio",
+  "trabajo","trabajar","oficina","negocio","empresa","diseño","diseno","editar","edicion","edición",
+  "programar","programacion","programación","autocad","photoshop","illustrator","premiere","solidworks",
+  "revit","render","excel","office","word","zoom","clases","teletrabajo","arquitectura","ingenieria",
+  // specs
+  "ram","memoria","procesador","cpu","disco","almacenamiento","ssd","pantalla","pulgadas","resolucion",
+  "resolución","grafica","gráfica","graficos","gráficos","gpu","rtx","gtx","nvidia","radeon","intel",
+  "amd","ryzen","core","i3","i5","i7","i9","teclado","bateria","batería","camara","cámara","puerto",
+  "puertos","hdmi","usb","wifi","bluetooth","peso","pesa","huella","oled","hz","refresco","tasa","taza",
+  "refresh","specs","especificaciones","ficha","caracteristicas","características","gb","tb","nucleos",
+  "núcleos","windows","sistema operativo",
+  // compra
+  "precio","precios","cuesta","vale","barata","barato","economica","económica","economico","económico",
+  "presupuesto","millones","millon","millón","lucas","oferta","ofertas","descuento","promocion",
+  "promoción","comprar","compra","garantia","garantía","envio","envío","entrega","pago","pagar",
+  "cuotas","financiacion","financiación","stock","disponible","disponibilidad","tienda","asesor",
+  // intencion de busqueda
+  "recomienda","recomiendas","recomiendame","recomiéndame","recomendar","recomendacion","recomendación",
+  "sugiere","sugieres","opciones","opcion","opción","muestrame","muéstrame","muestra","tienes","tienen",
+  "necesito","busco","quiero","potente","liviana","liviano","ligera","ligero","gama",
+  "escoger","elegir","escojo","elijo","decidir","comparar","diferencia",
+  "tengan","tenga","haya","hay","manejan","maneja","venden","vende",
+  "pese","pesada","pesado","tamaño","tamano","peso",
+  // juegos: "para valorant" no trae ninguna palabra de laptop
+  "valorant","fortnite","lol","league","warzone","cod","gta","minecraft","dota","csgo",
+  "fifa","roblox","apex","overwatch","elden","genshin","sims","tibia","wow",
+  // envio y pago escritos de otras formas
+  "envios","envíos","enviar","despachan","despacho","domicilio","transportadora",
+  "tarjeta","cuota","efectivo","contraentrega","addi","sistecredito",
+];
+
+function esDelDominio(q) {
+  return hasWord(q, PALABRAS_DOMINIO);
+}
+
+const SALUDOS = /^(hola|buenas|buenos d[ií]as|buenas tardes|buenas noches|hey|que tal|qué tal|saludos|hi|hello)[\s!.,¡]*$/i;
+
 function isOffTopic(query) {
   return hasWord(query, offTopicWords);
 }
@@ -120,7 +167,8 @@ function isFollowUp(q) {
     "cuanto tarda","cuánto tarda","cuanto demora","cuánto demora","cuanto tiempo",
     "cuánto tiempo","tiempo de entrega","tiempo de envio","tiempo de envío",
     "cuando llega","cuándo llega","cuando me llega","dias habiles","días hábiles",
-    "envio a","envío a","envian a","envían a","llega a","domicilio","despacho",
+    "envio a","envío a","envian a","envían a","llega a","llega","llegaria","llegaría",
+    "entrega","entregan","envian","envían","despachan","domicilio","despacho",
     "tiene garantia","tiene garantía","cuanta garantia","cuánta garantía",
     "anos de garantia","años de garantía","cubre la garantia","cubre la garantía",
     "formas de pago","medios de pago","puedo pagar","aceptan","cuotas","financiacion",
@@ -504,9 +552,21 @@ async function replyOnFreshchat(conversationId, actorId, text) {
 // Mismo collector GAS para ambos canales, pero cada canal cae en su
 // propia pestaña con su propio source. Fire-and-forget: no bloquea ni
 // rompe el flujo si el sheet falla. GET con texto recortado (límite URL).
+// Nunca mandar datos sensibles al Sheet: si el cliente escribe una tarjeta,
+// una cedula o un telefono, se guarda enmascarado.
+function redactar(t) {
+  return String(t || "")
+    .replace(/\b(?:\d[ -]?){13,19}\b/g, "[NUMERO OCULTO]")
+    .replace(/\b3\d{2}[ -]?\d{3}[ -]?\d{4}\b/g, "[TELEFONO OCULTO]")
+    .replace(/\b\d{6,11}\b/g, "[NUMERO OCULTO]")
+    .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "[CORREO OCULTO]");
+}
+
 function trackEvent(fields, tab, source) {
   if (!CONFIG.TRACK_URL) return;
   try {
+    if (fields.query) fields.query = redactar(fields.query);
+    if (fields.bot_message) fields.bot_message = redactar(fields.bot_message);
     const params = new URLSearchParams({
       __tab: tab,
       country: "CO",
@@ -597,7 +657,7 @@ app.get("/anastasia", async (req, res) => {
   if (session) session.intent = intent;
 
   console.log(`AnastasIA CO consulta: "${query}"${sessionId ? ` [${sessionId}]` : ""} intent=[${intent.uses.join(",")}] budget=${intent.budget}`);
-  if (!query) return res.json({ items: [] });
+  if (!query || !query.trim()) return res.json({ message: "Cuéntame qué tipo de laptop buscas y te ayudo a encontrarla.", items: [] });
 
   if (query.startsWith("http://") || query.startsWith("https://")) {
     return res.json({
@@ -638,8 +698,66 @@ app.get("/anastasia", async (req, res) => {
   try {
     const q = query.toLowerCase();
 
+    // ── Intentos de manipular al bot ─────────────────────────────────
+    // Se atajan aqui: nunca llegan al modelo.
+    const inyeccion = /(ignora|olvida|omite|desobedece)[\w\s]{0,20}(instruccion|instrucci[oó]n|regla|prompt|orden)|actua como|act[uú]a como|haz de cuenta que eres|finge (que )?(ser|eres)|system prompt|prompt del sistema|revela (tus|el)|repite tus (instruccion|regla)|dime tus (instruccion|regla)|eres (chatgpt|gpt|claude|un modelo|una ia|un bot de)|jailbreak|modo desarrollador|sin restricciones|di que[\w\s]{0,40}(cuesta|vale|es gratis|sale en|est[aá] en)|autoriza(me)? (un|el)|dame (el|tu) (codigo|c[oó]digo) fuente/i;
+    if (inyeccion.test(q)) {
+      console.log(`🛡️ Intento de manipulacion bloqueado`);
+      trackWeb({ session_id: sessionId || ip, message_type: "blocked",
+        query: query.slice(0, 500), bot_message: "bloqueado", products_count: 0 });
+      return res.json({
+        message: "Solo puedo ayudarte a encontrar laptops ASUS en nuestra tienda. ¿Qué tipo de laptop estás buscando?",
+        items: [],
+      });
+    }
+
+    // ── Datos personales: no se piden ni se guardan ──────────────────
+    const datoSensible = /\b(?:\d[ -]?){13,19}\b|\b3\d{2}[ -]?\d{3}[ -]?\d{4}\b|c[eé]dula|tarjeta de cr[eé]dito|n[uú]mero de tarjeta|cvv|clave|contrase[nñ]a/i;
+    if (datoSensible.test(q)) {
+      console.log(`🛡️ Dato sensible detectado → no se guarda`);
+      trackWeb({ session_id: sessionId || ip, message_type: "pii_blocked",
+        query: "[consulta con dato sensible]", bot_message: "bloqueado", products_count: 0 });
+      return res.json({
+        message: "Por tu seguridad no compartas datos personales ni de tu tarjeta por este chat. Si necesitas ayuda con un pago o un pedido, un asesor te atiende de forma segura.",
+        escalate: true,
+        items: [],
+      });
+    }
+
+    // ── Otras marcas: se redirige sin hablar mal de nadie ────────────
+    const competencia = /\b(macbook|apple|imac|hp\b|pavilion|lenovo|thinkpad|ideapad|dell\b|xps|inspiron|acer\b|nitro|predator|msi\b|katana|huawei|matebook|surface|alienware|razer|gigabyte|compumax)\b/i;
+    if (competencia.test(q)) {
+      return res.json({
+        message: "Solo manejo el catálogo de laptops ASUS de nuestra tienda, así que no puedo compararte con otras marcas. Cuéntame para qué la necesitas y te muestro la mejor opción ASUS para ti.",
+        items: [],
+      });
+    }
+
+    // ── Consulta vacía ───────────────────────────────────────────────
+    if (!q.trim()) {
+      return res.json({ message: "Cuéntame qué tipo de laptop buscas y te ayudo a encontrarla.", items: [] });
+    }
+
+    // ── Relevancia: si no habla de laptops ni continua la conversacion,
+    // no entra. Esto es lo que impide usar a AnastasIA como una IA general.
+    const hayContexto = !!(session?.selectedProduct || session?.shownProducts?.length);
+    if (!esDelDominio(q) && !SALUDOS.test(q.trim()) && !isFollowUp(q) &&
+        !(hayContexto && esPreguntaCorta(q))) {
+      console.log(`🛡️ Fuera de dominio: "${query.slice(0, 60)}"`);
+      trackWeb({ session_id: sessionId || ip, message_type: "fuera_de_dominio",
+        query: query.slice(0, 500), bot_message: "redirigido", products_count: 0 });
+      return res.json({
+        message: "Soy AnastasIA, la asesora virtual de laptops ASUS de la tienda, así que solo puedo ayudarte con eso. ¿Qué tipo de laptop estás buscando: gaming, universidad, trabajo o diseño?",
+        items: [],
+      });
+    }
+
     const salesWords = [
       "cupon","cupón","codigo descuento","código descuento","promocion","promoción",
+      "descuento","descuentos","rebaja","rebajar","precio especial","mejor precio","me lo dejas",
+      "me lo deja","hacer un precio","precio mas bajo","precio más bajo","negociar","regatear",
+      "apartar","apartado","separar","reservar","me lo guardas","me lo guarda","separame","apartame",
+      "factura electronica","factura electrónica","datos de facturacion",
       "pedido","mi orden","mi compra","pago","factura","boleta",
       "trade in","trade-in","cambiar equipo","entregar equipo","canjear",
       "reposicion","reposición","restock","cuando llega","cuando estará","cuándo estará","cuando va a llegar",
