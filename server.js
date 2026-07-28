@@ -181,6 +181,10 @@ function isOffTopic(query) {
   return hasWord(query, offTopicWords);
 }
 
+// El cliente compara lo que ya vio. Cubre singular, plural y las formas
+// comunes: "diferencias entre", "en que se diferencian", "cual me conviene".
+const COMPARACION = /(diferencia|diferencias|se diferencian|qu[eé] cambia|compar[aá]|comp[aá]ralas|comparaci[oó]n|entre las (tres|dos)|entre estas|entre estos|cu[aá]l me conviene|cu[aá]l elijo|cu[aá]l escojo|cu[aá]l es mejor de|pros y contras|ventajas y desventajas)/i;
+
 function isFollowUp(q) {
   const followUpWords = [
     "cuanto tarda","cuánto tarda","cuanto demora","cuánto demora","cuanto tiempo",
@@ -1203,6 +1207,8 @@ REGLAS:
     // Preguntas de idoneidad sobre la laptop ya elegida ("aguanta autocad?")
     // tambien son seguimiento: se juzgan con su ficha, no abren busqueda nueva.
     const usoSobreElegida = !!(session?.selectedProduct && PREGUNTA_USO.test(q));
+    // Comparar lo ya mostrado: se responde con esas mismas laptops, sin buscar de nuevo.
+    const comparaLoVisto = !!(session?.shownProducts?.length && COMPARACION.test(q));
 
     // Sin laptops en pantalla, las preguntas comparativas ("cual es la mejor")
     // son una busqueda, no un seguimiento. Solo las de informacion general
@@ -1218,7 +1224,7 @@ REGLAS:
     ]);
     const esSeguimiento = hayContexto ? isFollowUp(q) : infoGeneral;
 
-    if (esSeguimiento || isModelPick || specQuestion || usoSobreElegida) {
+    if (esSeguimiento || isModelPick || specQuestion || usoSobreElegida || comparaLoVisto) {
       const tFollow = Date.now();
       const shown = session?.shownProducts || [];
       const picked = session?.selectedProduct;
@@ -1239,6 +1245,7 @@ REGLAS:
 El cliente ya vio recomendaciones de laptops y ahora hace una pregunta de seguimiento (envío, garantía, pago, o cuál elegir).${pickedLine}${shownList}
 REGLAS:
 - Responde SOLO la pregunta, en 1-2 frases cortas, español neutro y profesional, sin jerga.
+- Si el cliente pide COMPARAR o pregunta las diferencias entre las que ya vio: comparalas SOLO entre esas, por nombre, usando la lista de arriba. Nombra 2 o 3 diferencias concretas (procesador, pantalla, RAM, almacenamiento, precio) y cierra sugiriendo cual le conviene segun su uso. NO menciones ninguna laptop que no este en esa lista. Aqui puedes usar hasta 4 frases.
 - ANTES de decir que no tienes un dato (teclado, bateria, puertos, peso, sistema operativo, que trae en la caja), BUSCALO en la FICHA COMPLETA de arriba. Solo di que no lo tienes si de verdad no aparece ahi. Si aparece, responde con el texto exacto de la ficha.
 - NO listes tarjetas de producto nuevas. Si el cliente pregunta cual le conviene o elige una de las que vio, puedes mencionarla POR NOMBRE (de la lista de arriba) y dar un criterio breve, pero sin reabrir busqueda.
 - Si pregunta por envíos: en Colombia la entrega suele ser 2-3 días hábiles según ciudad.
