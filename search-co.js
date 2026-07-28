@@ -401,7 +401,27 @@ export function selectProducts(catalog, query, intent, n = 3) {
     const dominante = (scored.length > 1 && scored[0].s >= scored[1].s * 1.25 && scored[0].s > 0)
       ? scored[0].p : null;
 
-    let base = band.slice(0, 8).map(r => r.p);
+    // Una opcion por linea de producto. Sin esto, con un catalogo grande los
+    // tres escalones de precio podian caer todos en Vivobook y el cliente
+    // nunca veia una Zenbook o una TUF. Ahora ve alternativas de verdad.
+    const lineaDe = (p) => {
+      // Las series (Zenbook, TUF, ROG...) solo agrupan notebooks. Una placa
+      // madre y una fuente ROG son productos distintos, no la misma linea.
+      if ((p.tipo || "laptop") === "laptop") {
+        const t = txt(p);
+        for (const [nombre, re] of Object.entries(SERIES)) if (re.test(t)) return nombre;
+      }
+      return (p.title || "").split(/\s+/).slice(0, 3).join(" ").toLowerCase();
+    };
+    const lineasVistas = new Set();
+    let base = [];
+    for (const r of band) {
+      const l = lineaDe(r.p);
+      if (lineasVistas.has(l)) continue;
+      lineasVistas.add(l);
+      base.push(r.p);
+      if (base.length >= 8) break;
+    }
     if (base.length < n) {
       // Completar SOLO con productos que encajan (puntaje > 0). Si no alcanzan,
       // se devuelven menos tarjetas: una que sirve vale mas que tres de relleno.
