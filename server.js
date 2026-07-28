@@ -674,6 +674,7 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
 El cliente ya vio recomendaciones de laptops y ahora hace una pregunta de seguimiento (envío, garantía, pago, o cuál elegir).${pickedLine}${shownList}
 REGLAS:
 - Responde SOLO la pregunta, en 1-2 frases cortas, español neutro y profesional, sin jerga.
+- ANTES de decir que no tienes un dato (teclado, bateria, puertos, peso, sistema operativo, que trae en la caja), BUSCALO en la FICHA COMPLETA de arriba. Solo di que no lo tienes si de verdad no aparece ahi. Si aparece, responde con el texto exacto de la ficha.
 - NO listes tarjetas de producto nuevas. Si el cliente pregunta cual le conviene o elige una de las que vio, puedes mencionarla POR NOMBRE (de la lista de arriba) y dar un criterio breve, pero sin reabrir busqueda.
 - Si pregunta por envíos: en Colombia la entrega suele ser 2-3 días hábiles según ciudad.
 - Si pregunta por garantía: las laptops ASUS tienen garantía oficial; los detalles los confirma el asesor.
@@ -811,7 +812,7 @@ Escribe un mensaje corto (2-3 frases) que:
 
     // Pregunta puntual sobre un modelo nombrado: respuesta en texto plano
     // (sin JSON, que es donde se rompia) + la tarjeta de ESA laptop.
-    if (sel.exactModel && sel.products.length === 1 && isSpecQuestion(q)) {
+    if (sel.exactModel && sel.products.length === 1) {
       const p = sel.products[0];
       let answer = "";
       try {
@@ -819,17 +820,18 @@ Escribe un mensaje corto (2-3 frases) que:
           model: "claude-haiku-4-5-20251001",
           max_tokens: 220,
           system: `Eres AnastasIA, asesora de laptops ASUS Colombia. Español claro y profesional, sin jerga, trata al cliente de "tú".
-El cliente pregunta por UNA laptop puntual que SI tenemos disponible.
+El cliente se intereso por UNA laptop puntual y SI la tenemos disponible en la tienda.
 FICHA: ${p.title}
 DESCRIPCION: ${(p.descriptionFull || p.description || "").replace(/"/g, "'")}
-Precio: ${formatCOP(parseFloat(p.price) || 0)}
+Precio: ${formatCOP(parseFloat(p.price) || 0)}${calcPromo(p.regularPrice, p.price) ? ` (en oferta, antes ${formatCOP(parseFloat(p.regularPrice) || 0)})` : ""}
 REGLAS:
-- Responde SOLO su pregunta, con el dato exacto que aparece en la DESCRIPCION. Ej: "Trae 64GB LPDDR5X".
-- Si ese dato NO aparece en la descripcion, dilo con honestidad y sugiere confirmarlo con un asesor. NUNCA lo inventes.
-- Agrega como maximo una frase corta de por que es buena opcion.
-- Cierra invitando a dar clic en "Ver producto".
-- NO menciones ni compares otras laptops. NO digas que le muestras varias opciones.
-- Devuelve SOLO texto plano: sin JSON, sin markdown, sin listas.`,
+- Arranca confirmando que SI esta disponible en la tienda.${isSpecQuestion(q) ? `
+- El cliente hizo una pregunta puntual sobre sus especificaciones: RESPONDELA con el dato exacto que aparece en la DESCRIPCION (ej: "Trae 64GB LPDDR5X"). Si ese dato NO aparece en la descripcion, dilo con honestidad y sugiere confirmarlo con un asesor. NUNCA lo inventes.` : ""}
+- Di en una o dos frases por que es buena opcion y para que usos brilla, basandote SOLO en sus specs reales de la descripcion.
+- Si esta en oferta, mencionalo en pocas palabras.
+- Cierra invitando a dar clic en "Ver producto" para comprarla.
+- NO menciones ni compares otras laptops. NUNCA digas que le muestras varias opciones: solo hay una tarjeta.
+- Maximo 3 frases. Texto plano: sin JSON, sin markdown, sin listas, sin jerga.`,
           messages: [{ role: "user", content: query }],
         });
         answer = (r.content[0]?.text || "").trim();
@@ -839,23 +841,22 @@ REGLAS:
       }
       const sp = parseSpecs(p);
       if (!answer) {
-        const ficha = [sp.cpu && `procesador ${sp.cpu}`, sp.ram && `${sp.ram} de RAM`, sp.ssd && sp.ssd, sp.gpu && sp.gpu].filter(Boolean).join(", ");
-        answer = ficha
-          ? `La ${p.title} trae ${ficha}. Puedes dar clic en "Ver producto" para ver la ficha completa.`
-          : `Te dejo la ${p.title}. Da clic en "Ver producto" para ver todos los detalles.`;
+        const ficha = [sp.cpu && `procesador ${sp.cpu}`, sp.ram && `${sp.ram} de RAM`, sp.ssd, sp.gpu].filter(Boolean).join(", ");
+        const oferta = calcPromo(p.regularPrice, p.price) ? ` Ahora esta en oferta a ${formatCOP(parseFloat(p.price) || 0)}.` : "";
+        answer = `Sí, la ${p.title} está disponible en la tienda.${ficha ? ` Trae ${ficha}.` : ""}${oferta} Puedes dar clic en "Ver producto" para comprarla.`;
       }
       const item = itemFromCatalog(p, { IDEAL_PARA: "", TAGLINE: calcPromo(p.regularPrice, p.price) || "Disponible" });
       if (session) {
         session.selectedProduct = {
           title: p.title, model: p.model,
           specs: [sp.cpu, sp.ram, sp.ssd, sp.pantalla, sp.gpu, sp.teclado].filter(Boolean).join(" | "),
-          ficha: (p.descriptionFull || p.description || "").slice(0, 700),
+          ficha: (p.descriptionFull || p.description || "").slice(0, 1200),
         };
         session.shownProducts = [session.selectedProduct];
         session.history.push({ role: "user", content: query });
         session.history.push({ role: "assistant", content: answer });
       }
-      console.log(`📄 Pregunta de spec sobre modelo nombrado → texto + 1 tarjeta`);
+      console.log(`📄 Modelo nombrado → respuesta en texto + 1 tarjeta`);
       trackWeb({
         session_id: sessionId || ip,
         message_type: "model_question",
@@ -986,7 +987,7 @@ REGLAS (sin comillas dobles en ningun valor de texto):
         SSD:                  clean(ci.ssd) || sp.ssd,
         PANTALLA:             clean(ci.pantalla) || sp.pantalla,
         GPU:                  clean(ci.gpu) || sp.gpu,
-        TECLADO_ES:           clean(ci.teclado_espanol),
+        TECLADO_ES:           clean(ci.teclado_espanol) || sp.teclado,
         EN_CAJA:              clean(ci.en_caja),
         IDEAL_PARA:           clean(ci.ideal_para),
         TAGLINE:              clean(ci.tagline) || calcPromo(p.regularPrice, p.price) || "",
@@ -1011,7 +1012,7 @@ REGLAS (sin comillas dobles en ningun valor de texto):
         return {
           title: it.TITLE, model: src?.model || "",
           specs: [it.CPU, it.RAM, it.SSD, it.PANTALLA, it.GPU, it.TECLADO_ES].filter(Boolean).join(" | ") || it.SPECS,
-          ficha: (src?.descriptionFull || src?.description || "").slice(0, 700),
+          ficha: (src?.descriptionFull || src?.description || "").slice(0, 500),
         };
       });
       session.history.push({ role: "user", content: query });
