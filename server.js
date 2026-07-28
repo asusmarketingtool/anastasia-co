@@ -189,11 +189,15 @@ async function refreshCatalog() {
     const items = Array.isArray(raw) ? raw : [raw];
     catalog = items.map((item) => {
       const val = (v) => { if (!v) return ""; if (typeof v === "string") return v.trim(); if (typeof v === "number") return String(v); if (v["#text"]) return String(v["#text"]).trim(); return ""; };
-      const stripHtml = (s) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").replace(/&nbsp;/g, " ").replace(/&[a-z]+;/g, "").trim().slice(0, 300);
+      const stripHtml = (s) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").replace(/&nbsp;/g, " ").replace(/&[a-z]+;/g, "").trim();
+      const fullDesc = stripHtml(val(item.Short_Description) || val(item.description) || "");
       return {
         id:           val(item.Part_Number) || val(item.Model) || "",
         title:        val(item.Name)        || val(item.title) || "",
-        description:  stripHtml(val(item.Short_Description) || val(item.description) || ""),
+        // description: version corta para los prompts de 3 tarjetas (control de tokens).
+        // descriptionFull: ficha completa, para responder preguntas de un solo producto.
+        description:  fullDesc.slice(0, 300),
+        descriptionFull: fullDesc.slice(0, 1500),
         price:        val(item.Offer_Price) || val(item.Regular_Price) || val(item.price) || "",
         regularPrice: val(item.Regular_Price) || "",
         link:         val(item.Product_URL) || val(item.link)  || "",
@@ -235,6 +239,44 @@ async function refreshCatalog() {
   } catch (err) {
     console.error("❌ Error actualizando catálogo CO:", err.message);
   }
+}
+
+// Extrae specs directo de la descripcion del feed. Se usa cuando el LLM no
+// devuelve items alineados, para que la tarjeta nunca salga sin chips.
+function parseSpecs(p) {
+  const d = ` ${p.descriptionFull || p.description || ""} `;
+  const pick = (re) => { const m = d.match(re); return m ? m[0].trim().replace(/^[,\s]+|[,\s]+$/g, "") : ""; };
+  return {
+    cpu: pick(/(intel\s+)?core\s+(ultra\s+)?[i]?\d[\w-]*\s*\d{0,4}\w*|(amd\s+)?ryzen\s*\d\s*\d{3,4}\w*/i),
+    ram: pick(/\d{1,3}\s?gb\s+(?:lp)?ddr\d\w*/i),
+    ssd: pick(/\d+\s?(gb|tb)\s+ssd/i),
+    pantalla: pick(/\b\d{2}(\.\d)?\s*(oled|pantalla|fhd\+?|wuxga|qhd\+?|pulgadas?)\w*/i),
+    gpu: pick(/(nvidia\s+)?(geforce\s+)?(rtx|gtx)\s*\d{3,4}(\s*\d{1,2}gb)?|intel\s+arc[\w\s]{0,10}|iris\s+xe|radeon\s+graphics/i),
+    teclado: pick(/teclado[\w\s,]{0,60}(espa[nñ]ol|latinoameric|retroilumin|iluminad|backlit)[\w\s]{0,25}|(espa[nñ]ol|latinoameric)[\w\s]{0,15}teclado/i),
+    so: pick(/windows\s*11\s*(home|pro)?[\w\s]{0,12}/i),
+  };
+}
+
+function itemFromCatalog(p, extra = {}) {
+  const sp = parseSpecs(p);
+  const regularNum = parseFloat(p.regularPrice) || parseFloat(p.price) || 0;
+  const offerNum   = parseFloat(p.price) || 0;
+  return {
+    TITLE: p.title,
+    TITLE_DISPLAY: p.title.slice(0, 50),
+    PRECIO_REGULAR_FORMAT: formatCOP(regularNum),
+    PRECIO_OFERTA_FORMAT:  formatCOP(offerNum),
+    PRECIO_REGULAR: regularNum,
+    PRECIO_OFERTA:  offerNum,
+    URL: addUTM(p.link, p.partNumber || p.model),
+    IMAGEN: p.image,
+    SPECS: [sp.cpu, sp.ram, sp.ssd, sp.pantalla].filter(Boolean).join(" | ") || (p.description || "").slice(0, 90),
+    CPU: sp.cpu, RAM: sp.ram, SSD: sp.ssd, PANTALLA: sp.pantalla, GPU: sp.gpu,
+    TECLADO_ES: sp.teclado, EN_CAJA: "",
+    IDEAL_PARA: "", TAGLINE: calcPromo(p.regularPrice, p.price) || "",
+    PROMO: calcPromo(p.regularPrice, p.price) || formatCOP(offerNum),
+    ...extra,
+  };
 }
 
 function calcPromo(regularPrice, price) {
@@ -527,7 +569,7 @@ app.get("/anastasia", async (req, res) => {
           max_tokens: 600,
           system: `Eres AnastasIA, experta en laptops ASUS Colombia. Te doy UN producto y debes armar su ficha tecnica.
 PRODUCTO: ${target.title}
-DESCRIPCION: ${target.description.replace(/"/g, "'")}
+DESCRIPCION: ${(target.descriptionFull || target.description).replace(/"/g, "'")}
 Modelo: ${target.model} | Precio: ${target.price}
 
 Devuelve SOLO JSON valido sin markdown:
@@ -541,7 +583,7 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
           let rawSheet = sheetResp.content[0].text.trim().replace(/```json|```/g, "").trim();
           sheet = JSON.parse(rawSheet);
         } catch {
-          const d = target.description;
+          const d = target.descriptionFull || target.description;
           const pick = (re) => { const m = d.match(re); return m ? m[0].trim() : ""; };
           const specs = [];
           const cpu = pick(/(amd\s+)?ryzen[\s\w]*?\d+\w*|core\s+(ultra\s+)?[i]?\d[\s\w-]*?\d*\w*|intel\s+core[\s\w-]*?\d+\w*/i);
@@ -618,10 +660,10 @@ REGLAS: solo specs que aparezcan en la descripcion; si un spec no esta, omite es
       const shown = session?.shownProducts || [];
       const picked = session?.selectedProduct;
       const pickedLine = picked
-        ? `\nEl cliente YA ELIGIO esta laptop: ${picked.title} — ${picked.specs || ""}. Si pregunta por un spec de ella (RAM, procesador, disco, pantalla, grafica, teclado), respondele con el valor exacto de esa ficha. Si el dato NO aparece ahi, dilo con honestidad y ofrece que un asesor lo confirme. NO muestres otras laptops.`
+        ? `\nEl cliente YA ELIGIO esta laptop: ${picked.title} — ${picked.specs || ""}.${picked.ficha ? `\nFICHA COMPLETA de esa laptop (usala para responder preguntas de specs): ${picked.ficha}` : ""} Si pregunta por un spec de ella (RAM, procesador, disco, pantalla, grafica, teclado), respondele con el valor exacto de esa ficha. Si el dato NO aparece ahi, dilo con honestidad y ofrece que un asesor lo confirme. NO muestres otras laptops.`
         : "";
       const shownList = shown.length
-        ? `\nLaptops que el cliente YA vio en esta conversacion (puedes referirte a ellas por nombre):\n${shown.map((p, i) => `${i+1}. ${p.title} — ${p.specs || ""}`).join("\n")}`
+        ? `\nLaptops que el cliente YA vio en esta conversacion (puedes referirte a ellas por nombre):\n${shown.map((p, i) => `${i+1}. ${p.title} — ${p.specs || ""}${p.ficha ? ` || FICHA: ${p.ficha}` : ""}`).join("\n")}`
         : "";
       const histMsgs = session?.history?.slice(-MAGENTO_HISTORY_TURNS) || [];
 
@@ -767,6 +809,64 @@ Escribe un mensaje corto (2-3 frases) que:
       return res.json({ message: msg, items: [] });
     }
 
+    // Pregunta puntual sobre un modelo nombrado: respuesta en texto plano
+    // (sin JSON, que es donde se rompia) + la tarjeta de ESA laptop.
+    if (sel.exactModel && sel.products.length === 1 && isSpecQuestion(q)) {
+      const p = sel.products[0];
+      let answer = "";
+      try {
+        const r = await anthropic.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 220,
+          system: `Eres AnastasIA, asesora de laptops ASUS Colombia. Español claro y profesional, sin jerga, trata al cliente de "tú".
+El cliente pregunta por UNA laptop puntual que SI tenemos disponible.
+FICHA: ${p.title}
+DESCRIPCION: ${(p.descriptionFull || p.description || "").replace(/"/g, "'")}
+Precio: ${formatCOP(parseFloat(p.price) || 0)}
+REGLAS:
+- Responde SOLO su pregunta, con el dato exacto que aparece en la DESCRIPCION. Ej: "Trae 64GB LPDDR5X".
+- Si ese dato NO aparece en la descripcion, dilo con honestidad y sugiere confirmarlo con un asesor. NUNCA lo inventes.
+- Agrega como maximo una frase corta de por que es buena opcion.
+- Cierra invitando a dar clic en "Ver producto".
+- NO menciones ni compares otras laptops. NO digas que le muestras varias opciones.
+- Devuelve SOLO texto plano: sin JSON, sin markdown, sin listas.`,
+          messages: [{ role: "user", content: query }],
+        });
+        answer = (r.content[0]?.text || "").trim();
+      } catch (e) {
+        console.error("⚠️ Respuesta de spec fallo:", e.message);
+        answer = "";
+      }
+      const sp = parseSpecs(p);
+      if (!answer) {
+        const ficha = [sp.cpu && `procesador ${sp.cpu}`, sp.ram && `${sp.ram} de RAM`, sp.ssd && sp.ssd, sp.gpu && sp.gpu].filter(Boolean).join(", ");
+        answer = ficha
+          ? `La ${p.title} trae ${ficha}. Puedes dar clic en "Ver producto" para ver la ficha completa.`
+          : `Te dejo la ${p.title}. Da clic en "Ver producto" para ver todos los detalles.`;
+      }
+      const item = itemFromCatalog(p, { IDEAL_PARA: "", TAGLINE: calcPromo(p.regularPrice, p.price) || "Disponible" });
+      if (session) {
+        session.selectedProduct = {
+          title: p.title, model: p.model,
+          specs: [sp.cpu, sp.ram, sp.ssd, sp.pantalla, sp.gpu, sp.teclado].filter(Boolean).join(" | "),
+          ficha: (p.descriptionFull || p.description || "").slice(0, 700),
+        };
+        session.shownProducts = [session.selectedProduct];
+        session.history.push({ role: "user", content: query });
+        session.history.push({ role: "assistant", content: answer });
+      }
+      console.log(`📄 Pregunta de spec sobre modelo nombrado → texto + 1 tarjeta`);
+      trackWeb({
+        session_id: sessionId || ip,
+        message_type: "model_question",
+        query: query.slice(0, 500),
+        bot_message: answer.slice(0, 500),
+        products_shown: p.title.slice(0, 500),
+        products_count: 1,
+      });
+      return res.json({ message: answer, items: [item] });
+    }
+
     const productsToSend = sel.products;
 
     // Modelo nombrado: queda registrado como "la elegida" para los seguimientos.
@@ -868,7 +968,8 @@ REGLAS (sin comillas dobles en ningun valor de texto):
       const regularNum = parseFloat(p.regularPrice) || parseFloat(p.price) || 0;
       const offerNum   = parseFloat(p.price) || 0;
       const clean = (s) => (s ? String(s).replace(/"/g, "'").trim() : "");
-      const specsJoined = [ci.cpu, ci.ram, ci.ssd, ci.pantalla].filter(Boolean).join(" | ")
+      const sp = parseSpecs(p);   // respaldo si el LLM no devolvio specs
+      const specsJoined = [ci.cpu || sp.cpu, ci.ram || sp.ram, ci.ssd || sp.ssd, ci.pantalla || sp.pantalla].filter(Boolean).join(" | ")
         || p.description.slice(0, 90);
       return {
         TITLE:                p.title,
@@ -880,11 +981,11 @@ REGLAS (sin comillas dobles en ningun valor de texto):
         URL:                  addUTM(p.link, sku),
         IMAGEN:               p.image,
         SPECS:                clean(specsJoined),
-        CPU:                  clean(ci.cpu),
-        RAM:                  clean(ci.ram),
-        SSD:                  clean(ci.ssd),
-        PANTALLA:             clean(ci.pantalla),
-        GPU:                  clean(ci.gpu),
+        CPU:                  clean(ci.cpu) || sp.cpu,
+        RAM:                  clean(ci.ram) || sp.ram,
+        SSD:                  clean(ci.ssd) || sp.ssd,
+        PANTALLA:             clean(ci.pantalla) || sp.pantalla,
+        GPU:                  clean(ci.gpu) || sp.gpu,
         TECLADO_ES:           clean(ci.teclado_espanol),
         EN_CAJA:              clean(ci.en_caja),
         IDEAL_PARA:           clean(ci.ideal_para),
@@ -905,10 +1006,14 @@ REGLAS (sin comillas dobles en ningun valor de texto):
     });
 
     if (session) {
-      session.shownProducts = mergedItems.map(it => ({
-        title: it.TITLE, model: (productsToSend.find(p => p.title === it.TITLE)?.model) || "",
-        specs: [it.CPU, it.RAM, it.SSD, it.PANTALLA, it.GPU].filter(Boolean).join(" | ") || it.SPECS,
-      }));
+      session.shownProducts = mergedItems.map(it => {
+        const src = productsToSend.find(p => p.title === it.TITLE);
+        return {
+          title: it.TITLE, model: src?.model || "",
+          specs: [it.CPU, it.RAM, it.SSD, it.PANTALLA, it.GPU, it.TECLADO_ES].filter(Boolean).join(" | ") || it.SPECS,
+          ficha: (src?.descriptionFull || src?.description || "").slice(0, 700),
+        };
+      });
       session.history.push({ role: "user", content: query });
       session.history.push({ role: "assistant", content: (result.message || "") + " [mostre: " + mergedItems.map(i => i.TITLE).join(", ") + "]" });
       if (session.history.length > MAGENTO_HISTORY_TURNS * 2) session.history = session.history.slice(-MAGENTO_HISTORY_TURNS * 2);
