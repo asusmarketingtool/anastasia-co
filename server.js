@@ -95,7 +95,8 @@ const offTopicWords = [
   "drogas","cocaína","cocaina","marihuana",
   "hack","hackear","piratear","crackear",
   "receta","comida","cocinar","ingredientes",
-  "futbol","fútbol","deporte","partido de",
+  "futbol","fútbol","deporte","partido","partidos","mundial","seleccion colombia","selección colombia",
+  "quien gano","quién ganó","quien ganó","marcador","liga betplay","champions",
   "pelicula","película","serie",
   "música","canción","cancion","letra de",
   "chiste","broma","un cuento","cuentame un cuento",
@@ -932,7 +933,11 @@ REGLAS:
 
     const specQuestion = isSpecQuestion(q) && (session?.selectedProduct || session?.shownProducts?.length);
 
-    if (isFollowUp(q) || isModelPick || specQuestion) {
+    // Preguntas de idoneidad sobre la laptop ya elegida ("aguanta autocad?")
+    // tambien son seguimiento: se juzgan con su ficha, no abren busqueda nueva.
+    const usoSobreElegida = !!(session?.selectedProduct && PREGUNTA_USO.test(q));
+
+    if (isFollowUp(q) || isModelPick || specQuestion || usoSobreElegida) {
       const tFollow = Date.now();
       const shown = session?.shownProducts || [];
       const picked = session?.selectedProduct;
@@ -944,7 +949,9 @@ REGLAS:
         : "";
       const histMsgs = session?.history?.slice(-MAGENTO_HISTORY_TURNS) || [];
 
-      const followResp = await anthropic.messages.create({
+      let followResp = null;
+      try {
+      followResp = await anthropic.messages.create({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 250,
         system: `Eres AnastasIA, asesora de laptops ASUS Colombia. Entiendes la jerga colombiana si el cliente la usa, pero TU respondes en español claro y profesional, sin jerga ni modismos.
@@ -967,7 +974,19 @@ REGLAS:
 - Devuelve SOLO texto plano, sin JSON, sin markdown.`,
         messages: [...histMsgs, { role: "user", content: query }],
       });
-      const followText = (followResp.content[0]?.text || "").trim();
+      } catch (apiErr) {
+        console.error("⚠️ Claude no respondio en seguimiento:", apiErr.message);
+      }
+      let followText = (followResp?.content?.[0]?.text || "").trim();
+      // Respaldo: sin IA no se abre una busqueda nueva ni se tiran tarjetas;
+      // se responde con honestidad y se ofrece un asesor.
+      let followEscala = false;
+      if (!followText) {
+        followText = picked
+          ? `Para darte ese detalle de la ${picked.title} con precision, mejor te lo confirma un asesor. Da clic en "Hablar con asesor".`
+          : `Un asesor te puede ayudar con ese detalle. Da clic en "Hablar con asesor".`;
+        followEscala = true;
+      }
       console.log(`AnastasIA CO follow-up: ${Date.now() - tFollow}ms`);
 
       if (session) {
@@ -991,7 +1010,7 @@ REGLAS:
         bot_message: followText.slice(0, 500),
       });
 
-      return res.json({ message: followText, items: [] });
+      return res.json({ message: followText, escalate: followEscala, items: [] });
     }
 
     // Si el cliente nombro un modelo en un mensaje anterior y ahora lo confirma,
