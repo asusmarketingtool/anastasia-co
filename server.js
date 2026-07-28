@@ -131,7 +131,11 @@ const RAICES_DOMINIO = [
   "gam","jug","jueg","universi","estudi","colegi","carrera","tesis","clase","trabaj","oficin","negoci",
   "empres","teletrabaj","diseñ","disen","edit","edici","render","program","autocad","photoshop",
   "illustrator","premiere","solidworks","revit","excel","office","word","zoom","arquitect","ingenier",
-  "creador","contenido","streaming","modelad","animac",
+  "creador","contenido","streaming","modelad","animac","fotograf","esport","e-sport",
+  // uso en el hogar (menu "Para el Hogar" del sitio)
+  "hogar","casa","personal","diari","dia a dia","día a día","famili","navegar","netflix",
+  "redes sociales","basic","básic","uso general","2 en 1","dos en uno","convertible",
+  "copilot","ai pc","inteligencia artificial","snapdragon","intel","amd","ryzen","core",
   // specs
   "ram","memoria","procesador","cpu","chip","nucleo","núcleo","disco","almacen","ssd","nvme","pantalla",
   "pulgada","resoluc","grafic","gráfic","gpu","rtx","gtx","nvidia","radeon","intel","amd","ryzen","core",
@@ -1340,6 +1344,29 @@ Escribe un mensaje corto (2-3 frases) que:
       return res.json({ message: gMsg, items: [] });
     }
 
+    // Caso: pidio una serie puntual que no hay en el feed.
+    if (sel.mode === "serie_sin_stock") {
+      const nombreSerie = { proart: "ProArt", zenbook: "Zenbook", vivobook: "Vivobook",
+        expertbook: "ExpertBook", chromebook: "Chromebook", rog: "ROG", tuf: "TUF Gaming" }[sel.serie] || sel.serie;
+      const otras = [...new Set(catalog.filter(p => (p.tipo || "laptop") === "laptop")
+        .map(p => { for (const k of ["proart","zenbook","vivobook","expertbook","chromebook","rog","tuf"])
+          if (new RegExp(k === "rog" ? "\\brog\\b|strix|scar|zephyrus" : k, "i").test(p.title)) return k; return null; })
+        .filter(Boolean))].map(k => ({ proart: "ProArt", zenbook: "Zenbook", vivobook: "Vivobook",
+          expertbook: "ExpertBook", chromebook: "Chromebook", rog: "ROG", tuf: "TUF Gaming" }[k]));
+      const msg = otras.length
+        ? `Ahora mismo no tengo laptops ${nombreSerie} disponibles. Las series que sí tengo son ${otras.join(", ")}. ¿Cuál te gustaría ver?`
+        : `Ahora mismo no tengo laptops ${nombreSerie} disponibles en la tienda.`;
+      if (session) {
+        session.intent.serie = null;
+        session.history.push({ role: "user", content: query });
+        session.history.push({ role: "assistant", content: msg });
+      }
+      console.log(`📦 Serie ${sel.serie} sin stock → se ofrecen: ${otras.join(", ")}`);
+      trackWeb({ session_id: sessionId || ip, message_type: "serie_sin_stock",
+        query: query.slice(0, 500), bot_message: msg.slice(0, 500), products_count: 0 });
+      return res.json({ message: msg, items: [] });
+    }
+
     // Caso: no hay NADA que encaje.
     if (sel.mode === "empty" || sel.products.length === 0) {
       const budget = sel.budget;
@@ -1479,7 +1506,7 @@ REGLAS:
       userMessage += ` IMPORTANTE: el cliente pidio ${sel.unmet.join(", ")} y NINGUNA de estas laptops lo tiene. Reconocelo con honestidad en el message y explica brevemente por que las que le mostramos igual le sirven. NUNCA digas que alguna tiene ese spec.`;
     }
 
-    const useLabel = { gaming: "gaming", universidad: "universidad", trabajo: "trabajo", diseno: "diseño", portabilidad: "portabilidad" };
+    const useLabel = { gaming: "gaming", universidad: "universidad", trabajo: "trabajo", diseno: "diseño", portabilidad: "portabilidad", hogar: "uso en el hogar" };
     const profileUses = (intent.uses || []).map(u => useLabel[u] || u);
     const usesNote = profileUses.length > 1
       ? ` El cliente usara la laptop para varias cosas: ${profileUses.join(" y ")}. En "ideal_para" de cada producto refleja los usos que apliquen (ej: "Universidad y gaming"), no solo uno, siempre que el producto sirva para ellos.`
