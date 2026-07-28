@@ -68,12 +68,12 @@ const ADD    = /(tambi[eé]n|adem[aá]s|aparte|de paso|igual quiero|igual me sir
 const RESET  = /(empecemos de nuevo|empieza de nuevo|desde cero|olvida todo|borra todo|reinicia|otra cosa totalmente)/i;
 const NEG    = /(\bno\b|\bnada de\b|\bsin\b|\bnunca\b|\btampoco\b|\bya no\b)/i;
 
-export const CHEAPER = /(m[aá]s barat|m[aá]s econ[oó]mic|menos costos|precio m[aá]s bajo|menor precio|no tan car|muy car|se me pasa|econ[oó]mic)/i;
-export const PRICIER = /(m[aá]s potente|m[aá]s poderos|la mejor|el mejor|lo mejor|gama m[aá]s alta|tope de gama|top gama|gama alta|m[aá]s berrac|m[aá]s top|mayor rendimiento)/i;
+export const CHEAPER = /barat|econ[oó]mic|asequibl|accesibl|menos costos|precio m[aá]s bajo|precio bajo|bajo precio|menor precio|no tan car|muy car|se me pasa|bajo presupuesto|de entrada/i;
+export const PRICIER = /m[aá]s potente|potentes|m[aá]s poderos|la mejor\b|el mejor\b|lo mejor\b|gama m[aá]s alta|tope de gama|top gama|gama alta|m[aá]s berrac|m[aá]s top|mayor rendimiento|mejor rendimiento|m[aá]s r[aá]pid/i;
 
 // Que tipo de equipo pide el cliente. Por defecto, laptop.
 const TIPO_PEDIDO = [
-  [/\bally\b|steam deck|handheld|consolas? port[aá]tiles?|consola de mano/i, "handheld"],
+  [/\bally\b|steam deck|handheld|consolas? port[aá]til(es)?|consola de mano|consola gamer|consola de juegos/i, "handheld"],
   [/all in one|all-in-one|todo en uno|todo-en-uno|\baio\b/i, "aio"],
   [/\btorre\b|\btorres\b|\btower\b|desktop|de escritorio|de mesa|computadores? de mesa|\bpc gamer\b|g700/i, "torre"],
   [/\blaptop\b|\blaptops\b|port[aá]til|portatil|notebook/i, "laptop"],
