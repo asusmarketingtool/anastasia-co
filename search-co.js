@@ -73,9 +73,9 @@ export const PRICIER = /(m[aá]s potente|m[aá]s poderos|la mejor|el mejor|lo me
 
 // Que tipo de equipo pide el cliente. Por defecto, laptop.
 const TIPO_PEDIDO = [
-  [/\bally\b|steam deck|handheld|consola port[aá]til|consola de mano/i, "handheld"],
+  [/\bally\b|steam deck|handheld|consolas? port[aá]tiles?|consola de mano/i, "handheld"],
   [/all in one|all-in-one|todo en uno|todo-en-uno|\baio\b/i, "aio"],
-  [/\btorre\b|\btorres\b|\btower\b|desktop|pc de escritorio|equipo de escritorio|computador de escritorio|g700/i, "torre"],
+  [/\btorre\b|\btorres\b|\btower\b|desktop|de escritorio|de mesa|computadores? de mesa|\bpc gamer\b|g700/i, "torre"],
   [/\blaptop\b|\blaptops\b|port[aá]til|portatil|notebook/i, "laptop"],
 ];
 
@@ -109,6 +109,7 @@ export function updateIntent(state, message) {
 
   const t = tipoPedido(msg);
   if (t) st.tipo = t;
+  else if (mentioned.size) st.tipo = "laptop";   // uso nuevo sin decir tipo → laptop
 
   const b = extractBudget(msg);
   if (b) st.budget = b;
@@ -122,6 +123,14 @@ export function updateIntent(state, message) {
   const ram = msg.match(/\b(\d{1,2})\s*gb\b/);
   if (ram) st.ram = `${ram[1]}gb`;
   return st;
+}
+
+// "¿Qué tienen en oferta?" debe mostrar SOLO lo que tiene descuento.
+export const SOLO_OFERTA = /(en oferta|ofertas|con descuento|descuentos|rebajad|promoci[oó]n|promociones|liquidaci[oó]n|black friday|cyber)/i;
+
+function pctDescuento(p) {
+  const r = parseFloat(p.regularPrice) || 0, o = parseFloat(p.price) || 0;
+  return r > o && r > 0 ? (1 - o / r) : 0;
 }
 
 export function sortDirection(message) {
@@ -269,9 +278,12 @@ export function selectProducts(catalog, query, intent, n = 3) {
   const dir = sortDirection(q);
 
   // Modelo nombrado: respuesta directa, sin alternativas ni escalera.
-  const named = findNamedModel(catalog.filter(p => (p.tipo || "laptop") === (it.tipo || "laptop")), query, n);
+  // Un modelo nombrado se busca en TODO el catalogo: si el cliente escribe el
+  // nombre de una torre sin decir "torre", igual hay que encontrarla.
+  const named = findNamedModel(catalog, query, n);
   if (named.length) {
-    return { products: named, mode: "ok", budget: it.budget, unmet: [], orderedBy: "modelo", exactModel: true };
+    return { products: named, mode: "ok", budget: it.budget, unmet: [], orderedBy: "modelo",
+             exactModel: true, tipoEncontrado: named[0].tipo || "laptop" };
   }
 
   // Solo se recomiendan equipos del tipo pedido (laptop por defecto).
@@ -280,6 +292,16 @@ export function selectProducts(catalog, query, intent, n = 3) {
   const wantsGaming = it.uses.includes("gaming");
   if (wantsGaming) pool = pool.filter(isGamingProduct);
   if (!pool.length) return { products: [], mode: "empty", budget: it.budget, unmet: [] };
+
+  // Solo ofertas: se filtra y se ordena por mayor descuento.
+  if (SOLO_OFERTA.test(q)) {
+    const conOferta = pool.filter(p => pctDescuento(p) > 0);
+    if (conOferta.length) {
+      const ordenadas = [...conOferta].sort((a, b) => pctDescuento(b) - pctDescuento(a));
+      return { products: ordenadas.slice(0, n), mode: "ok", budget: it.budget,
+               unmet: [], orderedBy: "oferta" };
+    }
+  }
 
   // Presupuesto: techo duro.
   if (it.budget) {
