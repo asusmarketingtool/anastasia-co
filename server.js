@@ -3,7 +3,7 @@ import fetch from "node-fetch";
 import { XMLParser } from "fast-xml-parser";
 import Anthropic from "@anthropic-ai/sdk";
 // ── NUEVO: capa de intencion + seleccion de productos ────────────────
-import { newIntent, updateIntent, selectProducts, extractBudget } from "./search-co.js";
+import { newIntent, updateIntent, selectProducts, extractBudget, isGamingProduct, powerScore } from "./search-co.js";
 
 const app = express();
 app.use(express.json());
@@ -36,6 +36,7 @@ const CONFIG = {
 };
 
 let catalog = [];
+let catalogoExcluidos = [];   // que se dejo por fuera y por que
 const conversations = {};
 const conversationIntents = {};   // NUEVO: intencion por conversacion de Freshchat
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -260,6 +261,10 @@ async function refreshCatalog() {
     const parsed = parser.parse(xml);
     const raw = parsed?.products?.product || parsed?.rss?.channel?.item || parsed?.feed?.entry || [];
     const items = Array.isArray(raw) ? raw : [raw];
+    catalogoExcluidos = [];
+    const excluir = (p, razon) => {
+      catalogoExcluidos.push({ titulo: p.title, precio: p.price, razon });
+    };
     catalog = items.map((item) => {
       const val = (v) => { if (!v) return ""; if (typeof v === "string") return v.trim(); if (typeof v === "number") return String(v); if (v["#text"]) return String(v["#text"]).trim(); return ""; };
       const stripHtml = (s) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").replace(/&nbsp;/g, " ").replace(/&[a-z]+;/g, "").trim();
@@ -280,12 +285,13 @@ async function refreshCatalog() {
         partNumber:   val(item.Part_Number) || "",
         category:     val(item.BU)          || val(item.category) || "",
         availability: val(item.Availability) || val(item.availability) || "in stock",
+        tipo: clasificarTipo(`${val(item.Name)} ${val(item.BU)} ${val(item.category)}`),
       };
     }).filter(p => {
       if (!p.title) return false;
       const regular = parseFloat(p.regularPrice) || 0;
       const offer = parseFloat(p.price) || 0;
-      if (regular > 0 && offer > 0 && (offer / regular) < 0.5) return false;
+      if (regular > 0 && offer > 0 && (offer / regular) < 0.5) { excluir(p, "descuento mayor a 50% (posible error de precio)"); return false; }
 
       const t = `${p.title} ${p.category}`.toLowerCase();
       const accessoryWords = [
@@ -298,13 +304,14 @@ async function refreshCatalog() {
         "memoria usb","pendrive","usb-c","powerbank","power bank",
         "mousepad","mouse pad","gift","regalo","kit",
       ];
-      if (accessoryWords.some(w => t.includes(w))) return false;
+      if (accessoryWords.some(w => t.includes(w))) { excluir(p, "accesorio"); return false; }
 
-      const handheldWords = ["ally","xbox ally","rog ally","steam deck","handheld"];
-      if (handheldWords.some(w => t.includes(w))) return false;
+
+
+
 
       // Piso de precio: ninguna laptop ASUS en COP baja de ~$1.000.000.
-      if (offer > 0 && offer < 1000000) return false;
+      if (offer > 0 && offer < 1000000) { excluir(p, "precio menor a $1.000.000"); return false; }
 
       return true;
     });
@@ -461,7 +468,7 @@ function idealPara(p) {
   const tier = gpuTier(t);
   if (/proart/.test(t)) return "Diseño y edición";
   if (/zephyrus|strix|scar/.test(t) && tier >= 70) return "Gaming y creación";
-  if (tier >= 60) return "Gaming exigente";
+  if (tier >= 65) return "Gaming exigente";
   if (tier > 0) return "Gaming y estudio";
   if (/expertbook/.test(t)) return "Trabajo diario";
   if (/zenbook/.test(t)) return /oled/.test(t) ? "Productividad y diseño" : "Portabilidad y trabajo";
@@ -474,8 +481,8 @@ function taglineFor(p) {
   const tier = gpuTier(t);
   if (/zephyrus duo|screenpad plus|doble pantalla/.test(t)) return "Doble pantalla";
   if (/proart/.test(t)) return "Color profesional";
-  if (tier >= 80) return "Potencia máxima";
-  if (tier >= 60) return "Alto rendimiento";
+  if (tier >= 85) return "Potencia máxima";
+  if (tier >= 65) return "Alto rendimiento";
   if (tier > 0) return "Gaming accesible";
   if (/oled/.test(t)) return "Pantalla OLED";
   if (/1\.[0-4]\s*kg|liviana|delgada/.test(t)) return "Ultraliviana";
@@ -503,6 +510,32 @@ function itemFromCatalog(p, extra = {}) {
     ...extra,
   };
 }
+
+// Que es cada producto del feed. El stock lo manda el feed: si no viene,
+// no existe para el bot; si viene, se puede recomendar cuando lo pidan.
+function clasificarTipo(texto) {
+  const t = normTxt(texto).toLowerCase();
+  if (/\bally\b|steam deck|handheld|consola/.test(t)) return "handheld";
+  if (/all in one|all-in-one|todo en uno|\baio\b/.test(t)) return "aio";
+  if (/\btorre\b|\btower\b|desktop|de escritorio|mini pc|\bnuc\b/.test(t)) return "torre";
+  return "laptop";
+}
+
+// Que categorias tiene la tienda HOY, segun el feed. Nada quemado en codigo.
+function tiposDisponibles() {
+  return [...new Set(catalog.map(p => p.tipo || "laptop"))];
+}
+
+// "Lo que si tengo son laptops, torres y todo-en-uno. ¿Cual te muestro?"
+function fraseOfrecerLoQueHay(excepto) {
+  const nombres = tiposDisponibles().filter(t => t !== excepto).map(t => NOMBRE_TIPO[t]);
+  if (!nombres.length) return "";
+  if (nombres.length === 1) return `Lo que sí tengo disponible en la tienda son ${nombres[0]}. ¿Te muestro las opciones?`;
+  const ultimo = nombres.pop();
+  return `Lo que sí tengo disponible son ${nombres.join(", ")} y ${ultimo}. ¿Cuál te gustaría ver?`;
+}
+
+const NOMBRE_TIPO = { laptop: "laptops", torre: "torres o equipos de escritorio", aio: "todo-en-uno", handheld: "consolas portátiles" };
 
 function calcPromo(regularPrice, price) {
   const regular = parseFloat(regularPrice) || 0;
@@ -619,6 +652,67 @@ app.post("/webhook/freshchat", async (req, res) => {
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok", country: "CO", products: catalog.length, conversations: Object.keys(conversations).length });
+});
+
+// Radiografia del catalogo real, para revisarlo como eShop manager.
+// Abrir en el navegador: <tu-url>/catalog/audit
+app.get("/catalog/audit", (req, res) => {
+  const cop = (n) => "$" + Math.round(n).toLocaleString("es-CO");
+  const filas = catalog.map(p => {
+    const sp = parseSpecs(p);
+    const faltan = ["cpu","ram","ssd","pantalla","gpu"].filter(k => !sp[k]);
+    return {
+      titulo: p.title,
+      tipo: p.tipo || "laptop",
+      modelo: p.model,
+      precio: parseFloat(p.price) || 0,
+      precio_fmt: cop(parseFloat(p.price) || 0),
+      descuento_pct: (() => {
+        const r = parseFloat(p.regularPrice) || 0, o = parseFloat(p.price) || 0;
+        return r > o && r > 0 ? Math.round((1 - o / r) * 100) : 0;
+      })(),
+      ideal_para: idealPara(p),
+      badge: taglineFor(p),
+      gaming: isGamingProduct(p),
+      potencia: Math.round(powerScore(p)),
+      specs_faltantes: faltan,
+    };
+  }).sort((a, b) => a.precio - b.precio);
+
+  const porCategoria = {};
+  filas.forEach(f => { porCategoria[f.ideal_para] = (porCategoria[f.ideal_para] || 0) + 1; });
+
+  const porRazon = {};
+  catalogoExcluidos.forEach(e => { porRazon[e.razon] = (porRazon[e.razon] || 0) + 1; });
+
+  res.json({
+    total_en_catalogo: catalog.length,
+    por_tipo: catalog.reduce((a, p) => { const t = p.tipo || "laptop"; a[t] = (a[t] || 0) + 1; return a; }, {}),
+    excluidos: {
+      total: catalogoExcluidos.length,
+      por_razon: porRazon,
+      detalle: catalogoExcluidos,
+    },
+    resumen: {
+      por_categoria: porCategoria,
+      gaming: filas.filter(f => f.gaming).length,
+      no_gaming: filas.filter(f => !f.gaming).length,
+      con_specs_incompletos: filas.filter(f => f.specs_faltantes.length).length,
+      descuento_mayor_40: filas.filter(f => f.descuento_pct > 40).length,
+    },
+    revisar: {
+      specs_incompletos: filas.filter(f => f.specs_faltantes.length)
+        .map(f => ({ titulo: f.titulo, falta: f.specs_faltantes })),
+      posibles_accesorios: filas.filter(f => f.precio < 2000000)
+        .map(f => ({ titulo: f.titulo, precio: f.precio_fmt })),
+      descuentos_altos: filas.filter(f => f.descuento_pct > 40)
+        .map(f => ({ titulo: f.titulo, descuento: f.descuento_pct + "%", precio: f.precio_fmt })),
+    },
+    mas_baratas: filas.slice(0, 5).map(f => ({ titulo: f.titulo, precio: f.precio_fmt, ideal_para: f.ideal_para })),
+    mas_potentes: [...filas].sort((a, b) => b.potencia - a.potencia).slice(0, 5)
+      .map(f => ({ titulo: f.titulo, potencia: f.potencia, precio: f.precio_fmt })),
+    catalogo: filas,
+  });
 });
 
 app.get("/catalog/search", (req, res) => {
@@ -809,20 +903,27 @@ app.get("/anastasia", async (req, res) => {
       });
     }
 
-    const isHandheld = q.includes("ally") || q.includes("rog ally") ||
-      (q.includes("handheld") && !q.includes("laptop")) ||
-      q.includes("steam deck") ||
-      (q.includes("consola") && q.includes("portatil"));
-    if (isHandheld) {
-      return res.json({
-        message: "La ROG Ally no está disponible en stock en este momento. ¿Te puedo ayudar a encontrar una laptop gaming mientras tanto?",
-        items: [{ TITLE: "ROG Ally - Sin stock por ahora", TITLE_DISPLAY: "Vuelve pronto - Proximamente", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Consola portatil gaming - Sin stock por ahora", PROMO: "Proximamente disponible" }]
-      });
+    // ── Que tipo de equipo pide, y que hay en el feed ────────────────
+    // Si pide algo que no sea laptop: si hay en stock se le muestra; si no,
+    // se le dice con honestidad y se le ofrece la alternativa mas cercana.
+    const pedido = intent.tipo || "laptop";
+    if (pedido !== "laptop" && !catalog.some(p => (p.tipo || "laptop") === pedido)) {
+      // Quien busca una consola de mano no quiere una laptop encima. Se le dice
+      // que no hay, se le cuenta que SI hay, y se le deja elegir.
+      const msg = `Ahora mismo no tengo ${NOMBRE_TIPO[pedido]} disponibles en la tienda. ${fraseOfrecerLoQueHay(pedido)}`.trim();
+      if (session) {
+        session.intent.tipo = "laptop";   // queda abierto a lo que el cliente elija
+        session.history.push({ role: "user", content: query });
+        session.history.push({ role: "assistant", content: msg });
+      }
+      console.log(`📦 Sin stock de ${pedido} → se ofrece elegir entre ${tiposDisponibles().join(", ")}`);
+      trackWeb({ session_id: sessionId || ip, message_type: "sin_stock_tipo",
+        query: query.slice(0, 500), bot_message: msg.slice(0, 500), products_count: 0 });
+      return res.json({ message: msg, items: [] });
     }
 
     const nonLaptopWords = [
-      "torre","desktop","pc de escritorio","computadora de escritorio",
-      "all in one","all-in-one","rog pc","rog desktop","mini pc","nuc",
+      "rog pc","rog desktop",
       "monitor externo","pantalla externa","tablet","ipad",
       "servidor","server","nas","componentes","armar pc","build pc","pc armada","procesador suelto",
       "television","televisor","smart tv","smartwatch","reloj inteligente","proyector","ups","estabilizador",
@@ -831,10 +932,16 @@ app.get("/anastasia", async (req, res) => {
       "parlante","bocina","altavoz",
     ];
     if (hasWord(q, nonLaptopWords) || (q.includes("monitor") && !q.includes("laptop") && !q.includes("pantalla de laptop"))) {
-      return res.json({
-        message: "Por el momento solo contamos con laptops ASUS en nuestra tienda online en Colombia. ¿Te ayudo a encontrar la laptop perfecta para ti?",
-        items: [{ TITLE: "Explora nuestras laptops ASUS", TITLE_DISPLAY: "Ver laptops disponibles", PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "", PRECIO_REGULAR: 0, PRECIO_OFERTA: 0, URL: "https://www.asus.com/co/store/", IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800", SPECS: "Gaming · Trabajo · Universidad · Diseño", PROMO: "Encuentra tu laptop ideal hoy" }]
-      });
+      // No se le empuja una laptop a quien pidio otra cosa: se le dice que no
+      // hay y se le ofrece elegir entre lo que si tiene la tienda.
+      const queria = /monitor|pantalla externa/i.test(q) ? "monitores"
+                   : /mouse|teclado|audifon|auricular|diadema|mochila|malet|funda|cargador/i.test(q) ? "accesorios"
+                   : /celular|telefono|tablet|ipad|smartwatch|reloj/i.test(q) ? "ese tipo de producto"
+                   : "ese tipo de producto";
+      const msg = `Ahora mismo no tengo ${queria} en la tienda. ${fraseOfrecerLoQueHay(null)}`.trim();
+      trackWeb({ session_id: sessionId || ip, message_type: "sin_stock_tipo",
+        query: query.slice(0, 500), bot_message: msg.slice(0, 500), products_count: 0 });
+      return res.json({ message: msg, items: [] });
     }
 
     const wantsFullSpecs = hasWord(q, [
@@ -1284,7 +1391,6 @@ REGLAS:
     }
 
     const productsToSend = sel.products;
-
     // Modelo nombrado: queda registrado como "la elegida" para los seguimientos.
     if (sel.exactModel && productsToSend.length === 1 && session) {
       const p = productsToSend[0];
