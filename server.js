@@ -257,6 +257,40 @@ function parseSpecs(p) {
   };
 }
 
+// "Ideal para" y tagline calculados del catalogo. Antes los generaba el LLM
+// en el JSON; en la ruta de modelo nombrado ya no hay JSON, asi que se derivan
+// de las specs reales y la tarjeta nunca sale sin chips.
+function gpuTier(t) {
+  const g = t.match(/\b(rtx|gtx)\s*(\d{4})\b/i);
+  return g ? parseInt(g[2].slice(2), 10) : 0;
+}
+
+function idealPara(p) {
+  const t = `${p.title} ${p.descriptionFull || p.description || ""}`.toLowerCase();
+  const tier = gpuTier(t);
+  if (/proart/.test(t)) return "Diseño y edición";
+  if (/zephyrus|strix|scar/.test(t) && tier >= 70) return "Gaming y creación";
+  if (tier >= 60) return "Gaming exigente";
+  if (tier > 0) return "Gaming y estudio";
+  if (/expertbook/.test(t)) return "Trabajo diario";
+  if (/zenbook/.test(t)) return /oled/.test(t) ? "Productividad y diseño" : "Portabilidad y trabajo";
+  if (/vivobook/.test(t)) return "Universidad y trabajo";
+  return "Uso diario";
+}
+
+function taglineFor(p) {
+  const t = `${p.title} ${p.descriptionFull || p.description || ""}`.toLowerCase();
+  const tier = gpuTier(t);
+  if (/zephyrus duo|screenpad plus/.test(t)) return "Doble pantalla";
+  if (/proart/.test(t)) return "Color profesional";
+  if (tier >= 80) return "Potencia máxima";
+  if (tier >= 60) return "Alto rendimiento";
+  if (tier > 0) return "Gaming accesible";
+  if (/oled/.test(t)) return "Pantalla OLED";
+  if (/1\.[0-4]\s*kg|liviana|delgada/.test(t)) return "Ultraliviana";
+  return "Disponible";
+}
+
 function itemFromCatalog(p, extra = {}) {
   const sp = parseSpecs(p);
   const regularNum = parseFloat(p.regularPrice) || parseFloat(p.price) || 0;
@@ -273,7 +307,7 @@ function itemFromCatalog(p, extra = {}) {
     SPECS: [sp.cpu, sp.ram, sp.ssd, sp.pantalla].filter(Boolean).join(" | ") || (p.description || "").slice(0, 90),
     CPU: sp.cpu, RAM: sp.ram, SSD: sp.ssd, PANTALLA: sp.pantalla, GPU: sp.gpu,
     TECLADO_ES: sp.teclado, EN_CAJA: "",
-    IDEAL_PARA: "", TAGLINE: calcPromo(p.regularPrice, p.price) || "",
+    IDEAL_PARA: idealPara(p), TAGLINE: calcPromo(p.regularPrice, p.price) ? "En oferta" : taglineFor(p),
     PROMO: calcPromo(p.regularPrice, p.price) || formatCOP(offerNum),
     ...extra,
   };
@@ -387,6 +421,19 @@ app.get("/health", (req, res) => {
 app.get("/catalog/search", (req, res) => {
   const q = req.query.q || "";
   res.json(selectProducts(catalog, q, updateIntent(newIntent(), q), CONFIG.MAX_PRODUCTS_IN_PROMPT).products);
+});
+
+// Reinicio de conversacion. La pagina lo llama al dar clic en "Nueva consulta".
+// Borra intencion, historial y productos vistos de esa sesion.
+app.get("/anastasia/reset", (req, res) => {
+  const sessionId = req.query.session || req.query.session_id || "";
+  if (sessionId && magentoSessions[sessionId]) delete magentoSessions[sessionId];
+  console.log(`🔄 Sesion reiniciada${sessionId ? ` [${sessionId}]` : ""}`);
+  res.json({
+    ok: true,
+    message: "Listo, empecemos de nuevo. ¿Qué tipo de laptop estás buscando?",
+    items: [],
+  });
 });
 
 app.get("/anastasia", async (req, res) => {
@@ -845,7 +892,7 @@ REGLAS:
         const oferta = calcPromo(p.regularPrice, p.price) ? ` Ahora esta en oferta a ${formatCOP(parseFloat(p.price) || 0)}.` : "";
         answer = `Sí, la ${p.title} está disponible en la tienda.${ficha ? ` Trae ${ficha}.` : ""}${oferta} Puedes dar clic en "Ver producto" para comprarla.`;
       }
-      const item = itemFromCatalog(p, { IDEAL_PARA: "", TAGLINE: calcPromo(p.regularPrice, p.price) || "Disponible" });
+      const item = itemFromCatalog(p);
       if (session) {
         session.selectedProduct = {
           title: p.title, model: p.model,
@@ -989,8 +1036,8 @@ REGLAS (sin comillas dobles en ningun valor de texto):
         GPU:                  clean(ci.gpu) || sp.gpu,
         TECLADO_ES:           clean(ci.teclado_espanol) || sp.teclado,
         EN_CAJA:              clean(ci.en_caja),
-        IDEAL_PARA:           clean(ci.ideal_para),
-        TAGLINE:              clean(ci.tagline) || calcPromo(p.regularPrice, p.price) || "",
+        IDEAL_PARA:           clean(ci.ideal_para) || idealPara(p),
+        TAGLINE:              clean(ci.tagline) || calcPromo(p.regularPrice, p.price) || taglineFor(p),
         PROMO:                clean(ci.tagline) || calcPromo(p.regularPrice, p.price) || formatCOP(offerNum),
       };
     });
