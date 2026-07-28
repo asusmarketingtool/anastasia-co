@@ -401,6 +401,38 @@ Si la pregunta NO es sobre una caracteristica de la laptop (precio, envio, pago,
   }
 }
 
+// "Ideal para" y tagline calculados del catalogo (no los genera el LLM).
+function gpuTier(t) {
+  const g = normTxt(t).match(/\b(rtx|gtx)\s*(\d{4})\b/i);
+  return g ? parseInt(g[2].slice(2), 10) + parseInt(g[2][0], 10) * 2 : 0;
+}
+
+function idealPara(p) {
+  const t = normTxt(`${p.title || ""} ${p.descriptionFull || p.description || ""}`).toLowerCase();
+  const tier = gpuTier(t);
+  if (/proart/.test(t)) return "Diseño y edición";
+  if (/zephyrus|strix|scar/.test(t) && tier >= 70) return "Gaming y creación";
+  if (tier >= 60) return "Gaming exigente";
+  if (tier > 0) return "Gaming y estudio";
+  if (/expertbook/.test(t)) return "Trabajo diario";
+  if (/zenbook/.test(t)) return /oled/.test(t) ? "Productividad y diseño" : "Portabilidad y trabajo";
+  if (/vivobook/.test(t)) return "Universidad y trabajo";
+  return "Uso diario";
+}
+
+function taglineFor(p) {
+  const t = normTxt(`${p.title || ""} ${p.descriptionFull || p.description || ""}`).toLowerCase();
+  const tier = gpuTier(t);
+  if (/zephyrus duo|screenpad plus|doble pantalla/.test(t)) return "Doble pantalla";
+  if (/proart/.test(t)) return "Color profesional";
+  if (tier >= 80) return "Potencia máxima";
+  if (tier >= 60) return "Alto rendimiento";
+  if (tier > 0) return "Gaming accesible";
+  if (/oled/.test(t)) return "Pantalla OLED";
+  if (/1\.[0-4]\s*kg|liviana|delgada/.test(t)) return "Ultraliviana";
+  return "Disponible";
+}
+
 function itemFromCatalog(p, extra = {}) {
   const sp = parseSpecs(p);
   const regularNum = parseFloat(p.regularPrice) || parseFloat(p.price) || 0;
@@ -1161,6 +1193,8 @@ REGLAS:
     }).join("\n");
 
     const tClaude = Date.now();
+    let result = null;
+    try {
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 1100,
@@ -1193,15 +1227,33 @@ REGLAS (sin comillas dobles en ningun valor de texto):
     console.log(`⏱️ Claude API: ${Date.now() - tClaude}ms`);
 
     const raw = response.content[0].text.trim().replace(/```json|```/g, "").trim();
-    let result;
     try {
       result = JSON.parse(raw);
     } catch (parseErr) {
       const lastValid = raw.lastIndexOf("},");
       if (lastValid > 0) {
         try { result = JSON.parse(raw.slice(0, lastValid + 1) + "]}"); console.log(`⚠️ JSON reparado`); }
-        catch { throw parseErr; }
-      } else { throw parseErr; }
+        catch { result = null; }
+      }
+    }
+    } catch (apiErr) {
+      console.error("⚠️ Claude no respondio para las tarjetas:", apiErr.message);
+      result = null;
+    }
+
+    // Respaldo: si la API falla o el JSON no sirve, las tarjetas se arman con
+    // los datos del feed y el mensaje se escribe aqui. Nunca sale una tarjeta
+    // pelada ni una respuesta sin texto.
+    if (!result) {
+      const msgPorTipo = {
+        budget: "Estas son las opciones mas economicas que tengo disponibles, de menor a mayor precio.",
+        power:  "Estas son las mas potentes que tengo ahora mismo, ordenadas por rendimiento.",
+        spec:   "Estas cumplen lo que me pediste. Dale clic en Ver producto para el detalle.",
+        named:  "Si, la tenemos disponible. Dale clic en Ver producto para el detalle.",
+        normal: "Estas son las opciones que mejor encajan con lo que buscas.",
+      };
+      result = { message: msgPorTipo[messageType] || msgPorTipo.normal, items: [] };
+      console.log(`↩️ Respaldo sin IA: ${productsToSend.length} tarjeta(s) armadas del catalogo`);
     }
 
     const claudeItems = Array.isArray(result.items) ? result.items : [];
