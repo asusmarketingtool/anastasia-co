@@ -147,7 +147,14 @@ export function updateIntent(state, message) {
 
   const serie = seriePedida(msg);
   if (serie) st.serie = serie;
-  else if (CHANGE.test(msg) || mentioned.size) st.serie = null;   // cambio de tema: se suelta la serie
+  else if (CHANGE.test(msg) || mentioned.size || CHEAPER.test(msg) || PRICIER.test(msg) ||
+           tipoPedido(msg) || extractBudget(msg) ||
+           /\b(que|qu[eé])\s+(tienes|tienen|hay|manejan)\b|mu[eé]strame|muestrame|otras opciones|todas las/i.test(msg)) {
+    // Una busqueda nueva suelta la serie: si pidio Zenbooks y luego pregunta
+    // "cual es la mas potente", quiere la mas potente del catalogo, no la mas
+    // potente Zenbook.
+    st.serie = null;
+  }
   else if (mentioned.size) st.tipo = "laptop";   // uso nuevo sin decir tipo → laptop
 
   const b = extractBudget(msg);
