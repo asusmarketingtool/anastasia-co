@@ -117,19 +117,26 @@ const offTopicWords = [
   "chiste","broma","un cuento","cuentame un cuento",
   "noticias","periodico","periódico","novedades del mundo",
 ];
+// Compara ignorando tildes: "se quemo" y "se quemó" son lo mismo para el
+// cliente. Sin esto habia que listar cada variante a mano y siempre faltaba una.
+// Se respeta la ñ, que si cambia el significado.
+function sinTildes(t) {
+  return String(t || "")
+    .replace(/á/g, "a").replace(/é/g, "e").replace(/í/g, "i")
+    .replace(/ó/g, "o").replace(/ú/g, "u").replace(/ü/g, "u")
+    .replace(/Á/g, "a").replace(/É/g, "e").replace(/Í/g, "i")
+    .replace(/Ó/g, "o").replace(/Ú/g, "u");
+}
+
 function hasWord(text, words) {
-  const q = ` ${text.toLowerCase()} `;
+  const q = ` ${sinTildes(String(text).toLowerCase())} `;
   return words.some(w => {
-    w = w.toLowerCase();
+    w = sinTildes(String(w).toLowerCase());
     if (w.includes(" ")) return q.includes(w);
-    return new RegExp(`(^|[^a-záéíóúñ0-9])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-záéíóúñ0-9]|$)`, "i").test(q);
+    return new RegExp(`(^|[^a-zñ0-9])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-zñ0-9]|$)`, "i").test(q);
   });
 }
 
-// ── Filtro de relevancia ─────────────────────────────────────────────
-// La lista de temas prohibidos siempre se queda corta. Esto lo invierte:
-// solo pasa lo que habla de laptops, de la compra, o lo que continua una
-// conversacion que ya tiene una laptop sobre la mesa.
 const RAICES_DOMINIO = [
   // producto y marcas
   "laptop","portatil","portátil","notebook","computador","computadora","equipo","maquina","máquina",
@@ -155,6 +162,7 @@ const RAICES_DOMINIO = [
   "precio","cuest","vale","barat","economic","económic","asequibl","accesibl","presupuest","millon",
   "luca","ofert","descuent","promoc","rebaj","compr","garant","envi","entreg","despach","domicilio",
   "pag","cuota","financiac","stock","disponib","tienda","asesor","factur",
+  "pesos","cop",
   // intencion
   "recomend","sugier","opcion","opción","muestr","muéstr","tien","teng","hay","necesit","busc","quier",
   "escog","eleg","elij","decid","compar","diferenc","potent","gama","mejor","peor","sirve","aguanta",
@@ -881,7 +889,7 @@ app.get("/anastasia", async (req, res) => {
     // Si ya hay laptops en pantalla, cualquier mensaje corto es parte de la
     // conversacion: "pero son los mas baratos?" no puede quedar bloqueado.
     const cortoConContexto = hayContexto && q.trim().split(/\s+/).length <= 14;
-    if (!esDelDominio(q) && !SALUDOS.test(q.trim()) && !isFollowUp(q) && !cortoConContexto) {
+    if (!esDelDominio(q) && !SALUDOS.test(q.trim()) && !isFollowUp(q) && !cortoConContexto && !extractBudget(q)) {
       console.log(`🛡️ Fuera de dominio: "${query.slice(0, 60)}"`);
       trackWeb({ session_id: sessionId || ip, message_type: "fuera_de_dominio",
         query: query.slice(0, 500), bot_message: "redirigido", products_count: 0 });
