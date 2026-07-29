@@ -1580,8 +1580,9 @@ REGLAS (sin comillas dobles en ningun valor de texto):
   - REGLA CRITICA: si un dato NO aparece en la descripcion, pon "" (vacio). NUNCA inventes specs.
 - "ideal_para": para que tipo de uso brilla, 2-4 palabras. Ej: Gaming y AutoCAD  o  Universidad  o  Diseño y edicion  o  Trabajo diario.
 - "tagline": frase corta y vendedora SIN emojis, max 28 chars. Conecta con lo que pidio el cliente. Ej: En oferta  o  Brutal para gaming  o  Perfecta para la u  o  Potencia pura.
+- "modelo": copia EXACTA del campo Modelo del producto al que corresponde este item. Es obligatorio y sirve para emparejar tu respuesta con el producto correcto.
 - Devuelve SOLO JSON valido sin markdown, en el ORDEN exacto del catalogo:
-{"message":"texto","items":[{"title_display":"...","cpu":"...","ram":"...","ssd":"...","pantalla":"...","gpu":"...","teclado_espanol":"...","en_caja":"...","ideal_para":"...","tagline":"..."}]}`,
+{"message":"texto","items":[{"modelo":"...","title_display":"...","cpu":"...","ram":"...","ssd":"...","pantalla":"...","gpu":"...","teclado_espanol":"...","en_caja":"...","ideal_para":"...","tagline":"..."}]}`,
       messages: [{ role: "user", content: userMessageFinal + priorContext }],
     });
     console.log(`⏱️ Claude API: ${Date.now() - tClaude}ms`);
@@ -1623,8 +1624,25 @@ REGLAS (sin comillas dobles en ningun valor de texto):
     const aligned = claudeItems.length === productsToSend.length;
     if (!aligned) console.log(`⚠️ Claude devolvio ${claudeItems.length} items vs ${productsToSend.length} productos — usando datos del catalogo`);
 
+    // Emparejar por MODELO, no por posicion. Si el modelo devuelve los items en
+    // otro orden, antes se pegaba el nombre de una laptop sobre el link de otra.
+    const porModelo = {};
+    claudeItems.forEach(ci => {
+      const m = String(ci?.modelo || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (m) porModelo[m] = ci;
+    });
     const mergedItems = productsToSend.map((p, i) => {
-      const ci = aligned ? (claudeItems[i] || {}) : {};
+      const clave = String(p.model || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      let ci = (clave && porModelo[clave]) ? porModelo[clave] : null;
+      if (!ci && aligned) {
+        const cand = claudeItems[i] || {};
+        const cm = String(cand?.modelo || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        // Sin modelo que confirme la correspondencia no se usa: es preferible una
+        // tarjeta armada del catalogo que una con el nombre de otra laptop.
+        ci = (cm && cm === clave) ? cand : {};
+        if (!cm) console.log(`⚠️ El modelo no devolvio "modelo" en un item: se usa el catalogo`);
+      }
+      ci = ci || {};
       const sku = p.partNumber || p.model;
       const regularNum = parseFloat(p.regularPrice) || parseFloat(p.price) || 0;
       const offerNum   = parseFloat(p.price) || 0;
