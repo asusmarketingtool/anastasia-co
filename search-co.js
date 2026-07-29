@@ -45,7 +45,16 @@ const UNITS = { millon: 1e6, millones: 1e6, "millón": 1e6, palo: 1e6, palos: 1e
 const BUDGET_FLOOR = 500000;
 
 export function extractBudget(text) {
-  const q = text.toLowerCase().replace(/\s+/g, " ");
+  // Los numeros de specs no son dinero: "rtx 4060", "16GB", "144Hz", "1TB".
+  // En Peru los montos son de 4 digitos, asi que sin esto "rtx 4060" se leia
+  // como un presupuesto de 4.060.
+  const q = String(text || "").toLowerCase()
+    .replace(/\b(rtx|gtx|geforce|radeon|arc)\s*\d{3,4}\s*(ti|super)?\b/g, " ")
+    .replace(/\b\d{1,4}\s*(gb|tb|mb|hz|wh|mah|nits|mpx|mp|w)\b/g, " ")
+    .replace(/\b(i[3579]|ryzen|core|ultra|snapdragon|celeron|pentium)[\s-]*\d{0,5}\w*/g, " ")
+    .replace(/\b\d{2}(\.\d)?\s*(pulgadas|pulg|")/g, " ")
+    .replace(/\b(ddr|lpddr|pcie|usb|wifi|bluetooth)\s*\d(\.\d)?\w*/g, " ")
+    .replace(/\s+/g, " ");
   const m = q.match(new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*(${Object.keys(UNITS).join("|")})\\b`));
   if (m) {
     const n = Math.round(parseFloat(m[1].replace(",", ".")) * UNITS[m[2]]);
