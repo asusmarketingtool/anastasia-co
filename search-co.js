@@ -54,6 +54,10 @@ export function extractBudget(text) {
     .replace(/\b(i[3579]|ryzen|core|ultra|snapdragon|celeron|pentium)[\s-]*\d{0,5}\w*/g, " ")
     .replace(/\b\d{2}(\.\d)?\s*(pulgadas|pulg|")/g, " ")
     .replace(/\b(ddr|lpddr|pcie|usb|wifi|bluetooth)\s*\d(\.\d)?\w*/g, " ")
+    // Un año no es dinero. Solo cuenta como monto si viene con marca de precio.
+    .replace(/\b(19|20)\d{2}\b/g, (m, _p, off, str) =>
+      /(s\/|soles|pesos|presupuesto|hasta|maximo|máximo|tengo|gastar|invertir|precio de)/i
+        .test(String(str).slice(Math.max(0, off - 28), off)) ? m : " ")
     .replace(/\s+/g, " ");
   const m = q.match(new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*(${Object.keys(UNITS).join("|")})\\b`));
   if (m) {
@@ -95,15 +99,37 @@ const TIPO_PEDIDO = [
 ];
 
 // Series del menu del sitio ASUS Colombia.
+// Las sublineas van PRIMERO: si el cliente pide una "ROG Flow", queremos saber
+// si tenemos Flow, no responderle con cualquier ROG.
 export const SERIES = {
+  flow:       /\bflows?\b/i,
+  zephyrus:   /\bzephyrus\b/i,
+  scar:       /\bscar\b/i,
+  strix:      /\bstrix\b/i,
   proart:     /\bproarts?\b|studiobooks?/i,
   zenbook:    /\bzenbooks?\b/i,
   vivobook:   /\bvivobooks?\b/i,
   expertbook: /\bexpertbooks?\b/i,
   chromebook: /\bchromebooks?\b/i,
-  rog:        /\brog\b|strix|\bscar\b|zephyrus/i,
   tuf:        /\btufs?\b/i,
+  rog:        /\brog\b/i,
 };
+
+// Prefijos que NO son modelos: son specs. "rtx4060" no es una laptop.
+const PREFIJO_SPEC = /^(rtx|gtx|gt|ddr|lpddr|pcie|usb|wifi|bt|hz|gb|tb|mah|wh|w|i[3579]|core|ryzen|ultra|win)$/i;
+
+// Devuelve el codigo de modelo que pidio el cliente, si es que pidio uno.
+// Sirve para saber que NO basta con mostrar cualquier otra laptop.
+export function modeloPedido(q) {
+  const encontrados = String(q || "").toLowerCase().match(/\b[a-z]{1,3}\d{3,4}[a-z0-9-]*\b/g) || [];
+  for (const c of encontrados) {
+    const pre = (c.match(/^[a-z]{1,3}/) || [""])[0];
+    if (PREFIJO_SPEC.test(pre)) continue;
+    if (/^(19|20)\d{2}$/.test(c)) continue;
+    return c.toUpperCase();
+  }
+  return null;
+}
 
 export function seriePedida(q) {
   for (const [nombre, re] of Object.entries(SERIES)) if (re.test(q || "")) return nombre;
@@ -298,7 +324,11 @@ const GENERICO = new Set([
 export function findNamedModel(catalog, query, max = 3) {
   const q = (query || "").toLowerCase();
   const qNorm = q.replace(/[^a-z0-9]/g, "");
-  const codes = (q.match(/[a-z]{1,3}\d{3,4}[a-z0-9-]*/g) || []).map(c => c.replace(/[^a-z0-9]/g, "")).filter(c => c.length >= 6);
+  // Codigos de modelo cortos como "G815" o "X1504" tambien cuentan: antes se
+  // exigian 6 caracteres y una consulta tipo "cotizame la G815" no se reconocia.
+  const codes = (q.match(/\b[a-z]{1,3}\d{3,4}[a-z0-9-]*\b/g) || [])
+    .map(c => c.replace(/[^a-z0-9]/g, ""))
+    .filter(c => c.length >= 4 && /\d{3}/.test(c));
   const words = q.split(/\s+/).map(w => w.replace(/[^a-z0-9áéíóúñ]/g, "")).filter(w => w.length >= 3 && !GENERICO.has(w));
 
   let best = 0;
@@ -309,7 +339,10 @@ export function findNamedModel(catalog, query, max = 3) {
     let s = 0;
     if (modelNorm.length >= 5 && qNorm.includes(modelNorm)) s += 10;
     if (partNorm.length >= 6 && qNorm.includes(partNorm)) s += 10;
-    for (const c of codes) if (modelNorm.startsWith(c) || partNorm.startsWith(c)) s += 8;
+    for (const c of codes) {
+      if (modelNorm.startsWith(c) || partNorm.startsWith(c)) s += 10;
+      else if (modelNorm.includes(c) || partNorm.includes(c)) s += 8;
+    }
     s += words.filter(w => title.includes(w)).length * 2;   // ej: "zephyrus" + "duo" = 4
     if (s > best) best = s;
     return { p, s };
@@ -333,6 +366,11 @@ export function selectProducts(catalog, query, intent, n = 3) {
   // Un modelo nombrado se busca en TODO el catalogo: si el cliente escribe el
   // nombre de una torre sin decir "torre", igual hay que encontrarla.
   const named = findNamedModel(catalog, query, n);
+  if (!named.length) {
+    // Pidio un modelo concreto y no aparece: se dice, no se cambia por otro.
+    const codigo = modeloPedido(query);
+    if (codigo) return { products: [], mode: "modelo_sin_stock", modelo: codigo, budget: it.budget, unmet: [] };
+  }
   if (named.length) {
     return { products: named, mode: "ok", budget: it.budget, unmet: [], orderedBy: "modelo",
              exactModel: true, tipoEncontrado: named[0].tipo || "laptop" };
