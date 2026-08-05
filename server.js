@@ -161,7 +161,7 @@ const RAICES_DOMINIO = [
   // compra
   "precio","cuest","vale","barat","economic","económic","asequibl","accesibl","presupuest","millon",
   "luca","ofert","descuent","promoc","rebaj","compr","garant","envi","entreg","despach","domicilio",
-  "pag","cuota","financiac","stock","disponib","tienda","asesor","factur",
+  "pag","cuota","financiac","stock","disponib","tienda","asesor","factur","cotiz","cotizacion","cotización",
   "pesos","cop",
   // intencion
   "recomend","sugier","opcion","opción","muestr","muéstr","tien","teng","hay","necesit","busc","quier",
@@ -1372,14 +1372,37 @@ Escribe un mensaje corto (2-3 frases) que:
       return res.json({ message: gMsg, items: [] });
     }
 
+    // Caso: pidio un modelo concreto que no esta en el feed.
+    if (sel.mode === "modelo_sin_stock") {
+      const series = [...new Set(catalog.filter(p => (p.tipo || "laptop") === "laptop")
+        .map(p => { for (const k of ["flow","zephyrus","scar","strix","proart","zenbook","vivobook","expertbook","chromebook","tuf","rog"])
+          if (new RegExp(`\\b${k}`, "i").test(p.title)) return k; return null; })
+        .filter(Boolean))].map(k => ({ flow: "ROG Flow", zephyrus: "ROG Zephyrus", scar: "ROG Strix SCAR",
+          strix: "ROG Strix", proart: "ProArt", zenbook: "Zenbook", vivobook: "Vivobook",
+          expertbook: "ExpertBook", chromebook: "Chromebook", rog: "ROG", tuf: "TUF Gaming" }[k]));
+      const msg = series.length
+        ? `No tengo el modelo ${sel.modelo} en la tienda en este momento. Las series que sí tengo disponibles son ${series.join(", ")}. ¿Cuál te gustaría ver, o prefieres que te muestre algo con características parecidas?`
+        : `No tengo el modelo ${sel.modelo} en la tienda en este momento. Cuéntame qué uso le vas a dar y te muestro lo que sí tengo disponible.`;
+      if (session) {
+        session.history.push({ role: "user", content: query });
+        session.history.push({ role: "assistant", content: msg });
+      }
+      console.log(`📦 Modelo ${sel.modelo} no está en el feed`);
+      trackWeb({ session_id: sessionId || ip, message_type: "modelo_sin_stock",
+        query: query.slice(0, 500), bot_message: msg.slice(0, 500), products_count: 0 });
+      return res.json({ message: msg, items: [] });
+    }
+
     // Caso: pidio una serie puntual que no hay en el feed.
     if (sel.mode === "serie_sin_stock") {
-      const nombreSerie = { proart: "ProArt", zenbook: "Zenbook", vivobook: "Vivobook",
-        expertbook: "ExpertBook", chromebook: "Chromebook", rog: "ROG", tuf: "TUF Gaming" }[sel.serie] || sel.serie;
+      const nombreSerie = { flow: "ROG Flow", zephyrus: "ROG Zephyrus", scar: "ROG Strix SCAR", strix: "ROG Strix",
+        proart: "ProArt", zenbook: "Zenbook", vivobook: "Vivobook", expertbook: "ExpertBook",
+        chromebook: "Chromebook", rog: "ROG", tuf: "TUF Gaming" }[sel.serie] || sel.serie;
       const otras = [...new Set(catalog.filter(p => (p.tipo || "laptop") === "laptop")
-        .map(p => { for (const k of ["proart","zenbook","vivobook","expertbook","chromebook","rog","tuf"])
-          if (new RegExp(k === "rog" ? "\\brog\\b|strix|scar|zephyrus" : k, "i").test(p.title)) return k; return null; })
-        .filter(Boolean))].map(k => ({ proart: "ProArt", zenbook: "Zenbook", vivobook: "Vivobook",
+        .map(p => { for (const k of ["flow","zephyrus","scar","strix","proart","zenbook","vivobook","expertbook","chromebook","tuf","rog"])
+          if (new RegExp(`\\b${k}`, "i").test(p.title)) return k; return null; })
+        .filter(Boolean))].map(k => ({ flow: "ROG Flow", zephyrus: "ROG Zephyrus", scar: "ROG Strix SCAR",
+          strix: "ROG Strix", proart: "ProArt", zenbook: "Zenbook", vivobook: "Vivobook",
           expertbook: "ExpertBook", chromebook: "Chromebook", rog: "ROG", tuf: "TUF Gaming" }[k]));
       const msg = otras.length
         ? `Ahora mismo no tengo laptops ${nombreSerie} disponibles. Las series que sí tengo son ${otras.join(", ")}. ¿Cuál te gustaría ver?`
