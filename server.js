@@ -787,6 +787,36 @@ app.get("/anastasia", async (req, res) => {
   // Trackear aqui tambien lo duplicaria. Solo Freshchat se loguea del server.
   const trackWeb = (fields) => { if (!sessionId) trackFreshchat(fields); };
 
+  // ── Respaldo para Freshchat ────────────────────────────────────────
+  // Freshchat llama sin session y renderiza las tarjetas; una respuesta que
+  // solo trae texto le sale en blanco al cliente y el flujo salta al agente.
+  // Aqui se garantiza que SIEMPRE viaje al menos una tarjeta con el mensaje.
+  const jsonOriginal = res.json.bind(res);
+  const enviar = (payload) => {
+    if (!sessionId && payload && payload.message && (!payload.items || !payload.items.length)) {
+      // Titular corto (primera frase) y el mensaje completo en la linea de
+      // descripcion: asi la tarjeta se lee bien en el formato de producto.
+      const frases = String(payload.message).split(/(?<=[.!?])\s+/);
+      let titular = frases[0] || payload.message;
+      if (titular.length > 58) titular = titular.slice(0, 55).trim() + "...";
+      payload.items = [{
+        TITLE: titular,
+        TITLE_DISPLAY: titular,
+        PRECIO_REGULAR_FORMAT: "", PRECIO_OFERTA_FORMAT: "",
+        PRECIO_REGULAR: 0, PRECIO_OFERTA: 0,
+        URL: "https://www.asus.com/co/store/",
+        IMAGEN: "https://dlcdnwebimgs.asus.com/gain/34B7D53B-C42E-4F15-8B95-7EDA7F64F22C/w800",
+        SPECS: String(payload.message).slice(0, 240),
+        IDEAL_PARA: "", CPU: "", RAM: "", SSD: "", PANTALLA: "", GPU: "", TECLADO_ES: "", EN_CAJA: "",
+        PROMO: "Ver laptops disponibles",
+        TAGLINE: "Ver laptops disponibles",
+      }];
+    }
+    return jsonOriginal(payload);
+  };
+  res.json = enviar;
+
+
   // ── Intencion: lo ultimo que dice el cliente manda ──────────────────
   const intent = updateIntent(session?.intent || newIntent(), query);
   if (session) session.intent = intent;
